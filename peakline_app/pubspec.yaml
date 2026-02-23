@@ -1,0 +1,55 @@
+name: peakline_app
+description: AR mountain peak identification app. Overlays topographic horizon
+  profiles on your camera view and identifies peaks by name.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Sensors (compass, gyro, accelerometer)
+  sensors_plus: ^5.0.0
+
+  # GPS location
+  geolocator: ^12.0.0
+
+  # Camera
+  camera: ^0.11.0
+
+  # SQLite database (for DEM tiles and peak DB)
+  sqflite: ^2.3.0
+
+  # File paths
+  path_provider: ^2.1.0
+  path: ^1.9.0
+
+  # State management
+  flutter_riverpod: ^2.5.0
+
+  # HTTP client (for downloading DEM tiles)
+  dio: ^5.4.0
+
+  # Photo import
+  image_picker: ^1.0.7
+
+  # EXIF metadata reading
+  exif: ^3.3.0
+
+  # FFI for C native core
+  ffi: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  ffigen: ^11.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/peak_database/
