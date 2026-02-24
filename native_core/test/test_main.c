@@ -23,6 +23,19 @@ extern int test_interpolation_edges(void);
 extern int test_interpolation_out_of_bounds(void);
 extern int test_interpolation_void_values(void);
 
+extern int test_dem_get_elevation_center(void);
+extern int test_dem_get_elevation_interpolated(void);
+extern int test_dem_get_elevation_out_of_bounds(void);
+extern int test_dem_load_synthetic_hgt(void);
+
+extern int test_destination_point_north(void);
+extern int test_destination_point_east(void);
+extern int test_destination_point_at_latitude(void);
+extern int test_raycast_flat_terrain(void);
+extern int test_raycast_elevated_observer(void);
+extern int test_raycast_mountain_peak(void);
+extern int test_compute_horizon_profile(void);
+
 typedef int (*test_fn)(void);
 
 typedef struct {
@@ -45,6 +58,21 @@ int main(void) {
         {"interpolation_edges",        test_interpolation_edges},
         {"interpolation_out_of_bounds", test_interpolation_out_of_bounds},
         {"interpolation_void_values",  test_interpolation_void_values},
+
+        /* DEM I/O tests */
+        {"dem_get_elevation_center",       test_dem_get_elevation_center},
+        {"dem_get_elevation_interpolated",  test_dem_get_elevation_interpolated},
+        {"dem_get_elevation_out_of_bounds", test_dem_get_elevation_out_of_bounds},
+        {"dem_load_synthetic_hgt",          test_dem_load_synthetic_hgt},
+
+        /* Raycaster tests */
+        {"destination_point_north",      test_destination_point_north},
+        {"destination_point_east",       test_destination_point_east},
+        {"destination_point_at_latitude", test_destination_point_at_latitude},
+        {"raycast_flat_terrain",         test_raycast_flat_terrain},
+        {"raycast_elevated_observer",    test_raycast_elevated_observer},
+        {"raycast_mountain_peak",        test_raycast_mountain_peak},
+        {"compute_horizon_profile",      test_compute_horizon_profile},
     };
 
     int num_tests = sizeof(tests) / sizeof(tests[0]);
