@@ -60,16 +60,17 @@ class HomeScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Step 1: Project Scaffold',
+                        'Build Progress',
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       const SizedBox(height: 8),
-                      _statusRow(context, 'Flutter project', true),
-                      _statusRow(context, 'Material 3 theming', true),
-                      _statusRow(context, 'Riverpod state management', true),
-                      _statusRow(context, 'C native core (desktop build)', true),
+                      _statusRow(context, 'Flutter project + theming', true),
+                      _statusRow(context, 'C native core (curvature, interpolation)', true),
+                      _statusRow(context, 'DEM file loader (.hgt elevation data)', true),
+                      _statusRow(context, 'Ray-casting horizon engine', true),
+                      _statusRow(context, 'Dart FFI bridge to C core', true),
                       _statusRow(context, 'Camera preview', false),
                       _statusRow(context, 'Sensor integration', false),
                       _statusRow(context, 'Horizon overlay', false),
