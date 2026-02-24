@@ -321,9 +321,11 @@ class HorizonProfile {
   /// You MUST call this when you're done with the profile. If you forget,
   /// the C memory will leak (Dart's GC can't free it).
   void dispose() {
-    if (!_disposed && _nativePtr != null && _bridge != null) {
-      _bridge!._freeProfileResult(_nativePtr!);
-      malloc.free(_nativePtr!);
+    final ptr = _nativePtr;
+    final bridge = _bridge;
+    if (!_disposed && ptr != null && bridge != null) {
+      bridge._freeProfileResult(ptr);
+      malloc.free(ptr);
       _nativePtr = null;
       _disposed = true;
     }
