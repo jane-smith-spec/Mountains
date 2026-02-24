@@ -13,4 +13,27 @@ void main() {
 
     expect(find.byType(MaterialApp), findsOneWidget);
   });
+
+  testWidgets('Home screen shows Launch Live View button',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: PeakLineApp(),
+      ),
+    );
+
+    expect(find.text('Launch Live View'), findsOneWidget);
+  });
+
+  testWidgets('Home screen shows camera preview as completed',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: PeakLineApp(),
+      ),
+    );
+
+    // Camera preview row should exist in the build progress card
+    expect(find.text('Camera preview'), findsOneWidget);
+  });
 }

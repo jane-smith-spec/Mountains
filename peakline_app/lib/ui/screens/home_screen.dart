@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../services/sensor_service.dart';
 import '../../services/location_service.dart';
+import 'live_view_screen.dart';
 
 /// The home screen of PeakLine.
 ///
@@ -91,7 +92,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     _statusRow(context, 'Ray-casting horizon engine', true),
                     _statusRow(context, 'Dart FFI bridge to C core', true),
                     _statusRow(context, 'Sensor integration (compass + GPS)', true),
-                    _statusRow(context, 'Camera preview', false),
+                    _statusRow(context, 'Camera preview', true),
                     _statusRow(context, 'Horizon overlay', false),
                   ],
                 ),
@@ -205,6 +206,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                   ],
                 ),
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Launch camera button
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const LiveViewScreen(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Launch Live View'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(double.infinity, 56),
+                textStyle: const TextStyle(fontSize: 18),
               ),
             ),
           ],
