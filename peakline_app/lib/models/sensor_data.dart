@@ -92,7 +92,11 @@ double normalizeAngle(double deg) {
 ///   angleDifference(10, 350) = -20 (350° is 20° counter-clockwise from 10°)
 double angleDifference(double fromDeg, double toDeg) {
   double diff = toDeg - fromDeg;
-  while (diff > 180.0) diff -= 360.0;
-  while (diff < -180.0) diff += 360.0;
+  while (diff > 180.0) {
+    diff -= 360.0;
+  }
+  while (diff < -180.0) {
+    diff += 360.0;
+  }
   return diff;
 }
