@@ -1,15 +1,9 @@
 /// Live view screen — the main AR camera view.
 ///
 /// This is where the magic happens: the phone's camera feed is displayed
-/// full-screen, and later we'll overlay the horizon topo line, peak labels,
-/// and landmark pins on top of it.
-///
-/// For now (Step 5), this screen:
-///   - Initializes the camera on entry
-///   - Shows a full-screen camera preview
-///   - Displays live sensor readings (heading, pitch) as a HUD overlay
-///   - Handles permission errors and loading states gracefully
-///   - Cleans up camera resources on exit
+/// full-screen with the horizon topo line overlaid on top, plus sensor
+/// readings as a HUD. The horizon overlay re-projects on every sensor
+/// update for smooth real-time tracking.
 library;
 
 import 'package:camera/camera.dart';
@@ -18,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../services/camera_service.dart';
 import '../../services/sensor_service.dart';
+import '../widgets/horizon_overlay.dart';
 
 /// The live AR camera view screen.
 ///
@@ -101,12 +96,13 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
           // Layer 1: Camera preview (or loading/error state)
           _buildCameraLayer(cameraService),
 
-          // Layer 2: Sensor HUD overlay (heading, pitch, GPS)
+          // Layer 2: Horizon topo line overlay
+          if (cameraService.isInitialized) const HorizonOverlay(),
+
+          // Layer 3: (Future) Peak labels will go here
+
+          // Layer 4: Sensor HUD overlay (heading, pitch, GPS)
           if (cameraService.isInitialized) _buildSensorHud(orientation),
-
-          // Layer 3: (Future) Horizon overlay will go here
-
-          // Layer 4: (Future) Peak labels will go here
         ],
       ),
     );
