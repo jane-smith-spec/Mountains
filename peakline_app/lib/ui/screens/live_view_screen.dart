@@ -1,9 +1,10 @@
 /// Live view screen — the main AR camera view.
 ///
-/// This is where the magic happens: the phone's camera feed is displayed
-/// full-screen with the horizon topo line overlaid on top, plus sensor
-/// readings as a HUD. The horizon overlay re-projects on every sensor
-/// update for smooth real-time tracking.
+/// Full-screen camera with layered AR overlays:
+///   Layer 1: Camera preview
+///   Layer 2: Horizon topo line (toggleable)
+///   Layer 3: Peak flags and landmark pins (toggleable)
+///   Layer 4: HUD — compass, elevation, toggle panel
 library;
 
 import 'package:camera/camera.dart';
@@ -11,8 +12,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../services/camera_service.dart';
+import '../../services/location_service.dart';
 import '../../services/sensor_service.dart';
+import '../widgets/compass_indicator.dart';
+import '../widgets/elevation_readout.dart';
 import '../widgets/horizon_overlay.dart';
+import '../widgets/toggle_panel.dart';
 
 /// The live AR camera view screen.
 ///
@@ -34,8 +39,6 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
   @override
   void initState() {
     super.initState();
-    // Watch for app lifecycle changes (e.g., user switches to another app).
-    // We need to pause/resume the camera accordingly.
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
   }
@@ -46,21 +49,14 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
     super.dispose();
   }
 
-  /// Handle app lifecycle changes.
-  ///
-  /// When the user switches away from the app, we pause the camera to
-  /// save battery and release the hardware. When they come back, we
-  /// resume it.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final cameraService = ref.read(cameraServiceProvider);
     if (!cameraService.isInitialized) return;
 
     if (state == AppLifecycleState.inactive) {
-      // App is going to background — pause camera
       cameraService.controller?.pausePreview();
     } else if (state == AppLifecycleState.resumed) {
-      // App is coming back — resume camera
       cameraService.controller?.resumePreview();
     }
   }
@@ -81,9 +77,10 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
   Widget build(BuildContext context) {
     final cameraService = ref.watch(cameraServiceProvider);
     final orientation = ref.watch(deviceOrientationProvider);
+    final location = ref.watch(deviceLocationProvider);
+    final visibility = ref.watch(layerVisibilityProvider);
 
     return Scaffold(
-      // Make the camera fill the entire screen, including behind the status bar
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -96,13 +93,46 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
           // Layer 1: Camera preview (or loading/error state)
           _buildCameraLayer(cameraService),
 
-          // Layer 2: Horizon topo line overlay
-          if (cameraService.isInitialized) const HorizonOverlay(),
+          // Layer 2: Horizon topo line overlay (toggleable)
+          if (cameraService.isInitialized && visibility.showHorizon)
+            const HorizonOverlay(),
 
-          // Layer 3: (Future) Peak labels will go here
+          // Layer 3: (Future) Peak flags and landmark pins will be
+          // added here once the peak database is loaded
 
-          // Layer 4: Sensor HUD overlay (heading, pitch, GPS)
-          if (cameraService.isInitialized) _buildSensorHud(orientation),
+          // Layer 4: HUD widgets
+          if (cameraService.isInitialized) ...[
+            // Compass at top center
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: orientation.when(
+                  data: (o) => CompassIndicator(headingDeg: o.headingDeg),
+                  loading: () => const SizedBox.shrink(),
+                  error: (_, __) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+
+            // Toggle panel at top right
+            const TogglePanel(),
+
+            // Elevation readout at bottom left
+            Positioned(
+              bottom: MediaQuery.of(context).padding.bottom + 16,
+              left: 16,
+              child: location.when(
+                data: (loc) => ElevationReadout(
+                  altitudeM: loc.altitudeM,
+                  accuracyM: loc.accuracyM,
+                ),
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -169,9 +199,6 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
       return Container(color: Colors.black);
     }
 
-    // Fill the screen with the camera preview, cropping as needed.
-    // CameraPreview maintains its aspect ratio, so we use a FittedBox
-    // with BoxFit.cover to ensure it fills the entire screen.
     return SizedBox.expand(
       child: FittedBox(
         fit: BoxFit.cover,
@@ -182,99 +209,5 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
         ),
       ),
     );
-  }
-
-  /// Build the sensor heads-up display overlay.
-  ///
-  /// Shows the current compass heading and pitch on top of the camera
-  /// feed so you can see which direction you're pointing. This data
-  /// will later be used to align the horizon overlay.
-  Widget _buildSensorHud(AsyncValue<dynamic> orientation) {
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [Colors.black54, Colors.transparent],
-          ),
-        ),
-        padding: const EdgeInsets.fromLTRB(16, 32, 16, 16),
-        child: SafeArea(
-          top: false,
-          child: orientation.when(
-            data: (o) => Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _hudItem(
-                  Icons.explore,
-                  '${o.headingDeg.toStringAsFixed(0)}°',
-                  _headingLabel(o.headingDeg),
-                ),
-                _hudItem(
-                  Icons.straight,
-                  '${o.pitchDeg.toStringAsFixed(0)}°',
-                  'Pitch',
-                ),
-                _hudItem(
-                  Icons.screen_rotation,
-                  '${o.rollDeg.toStringAsFixed(0)}°',
-                  'Roll',
-                ),
-              ],
-            ),
-            loading: () => const Text(
-              'Starting sensors...',
-              style: TextStyle(color: Colors.white54),
-              textAlign: TextAlign.center,
-            ),
-            error: (e, _) => Text(
-              'Sensor error: $e',
-              style: const TextStyle(color: Colors.redAccent),
-              textAlign: TextAlign.center,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// A single HUD readout item.
-  Widget _hudItem(IconData icon, String value, String label) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: Colors.white70, size: 20),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            fontFamily: 'monospace',
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(color: Colors.white54, fontSize: 12),
-        ),
-      ],
-    );
-  }
-
-  /// Cardinal direction label for a heading.
-  String _headingLabel(double heading) {
-    if (heading >= 337.5 || heading < 22.5) return 'N';
-    if (heading < 67.5) return 'NE';
-    if (heading < 112.5) return 'E';
-    if (heading < 157.5) return 'SE';
-    if (heading < 202.5) return 'S';
-    if (heading < 247.5) return 'SW';
-    if (heading < 292.5) return 'W';
-    return 'NW';
   }
 }
