@@ -10,6 +10,16 @@
 ///
 /// The readings are streamed as [DeviceOrientation] objects via Riverpod,
 /// so the UI automatically rebuilds whenever the sensors update.
+///
+/// ## Filtering
+///
+/// Raw compass readings jitter by 5-10° between consecutive samples.
+/// This service supports two filtering modes:
+///   - **Low-pass filter**: Simple exponential smoothing (the original).
+///   - **Kalman filter**: Adaptive smoothing that tracks rate of change,
+///     giving smooth output when still and fast response when turning.
+///
+/// The active filter is controlled by the [SmoothingLevel] from settings.
 library;
 
 import 'dart:async';
@@ -19,9 +29,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../models/sensor_data.dart';
+import 'kalman_filter.dart';
 
 // -----------------------------------------------------------------------
-//  Low-pass filter for smoothing noisy sensor data
+//  Low-pass filter for smoothing noisy sensor data (legacy/fallback)
 // -----------------------------------------------------------------------
 
 /// A simple exponential smoothing filter.
@@ -92,16 +103,36 @@ class _HeadingFilter {
 /// The key insight: the magnetometer gives us compass heading, and the
 /// accelerometer gives us pitch and roll (by detecting which way gravity
 /// pulls). Together they tell us the phone's full 3D orientation.
+///
+/// Supports both legacy low-pass filtering and adaptive Kalman filtering.
+/// Switch between them with [setSmoothingLevel].
 class SensorService {
-  SensorService() {
+  SensorService({SmoothingLevel? smoothingLevel}) {
+    // Initialize with legacy low-pass filters as baseline
     _headingFilter = _HeadingFilter(0.15);
     _pitchFilter = _LowPassFilter(0.15);
     _rollFilter = _LowPassFilter(0.15);
+
+    // Set up Kalman filters if a smoothing level is provided
+    if (smoothingLevel != null) {
+      _useKalman = true;
+      _applyKalmanSettings(smoothingLevel);
+    }
   }
 
+  // -- Legacy low-pass filters --
   late final _HeadingFilter _headingFilter;
   late final _LowPassFilter _pitchFilter;
   late final _LowPassFilter _rollFilter;
+
+  // -- Kalman filters (used when enabled via settings) --
+  bool _useKalman = false;
+  HeadingKalmanFilter? _headingKalman;
+  KalmanFilter1D? _pitchKalman;
+  KalmanFilter1D? _rollKalman;
+
+  // Timestamp for computing dt between measurements
+  DateTime? _lastSampleTime;
 
   StreamSubscription<MagnetometerEvent>? _magSub;
   StreamSubscription<AccelerometerEvent>? _accelSub;
@@ -113,12 +144,50 @@ class SensorService {
   // Stream controller that emits fused orientation
   final _orientationController = StreamController<DeviceOrientation>.broadcast();
 
+  /// Whether the Kalman filter is currently active.
+  bool get useKalmanFilter => _useKalman;
+
   /// Stream of device orientation updates.
   ///
   /// Emits roughly 30-60 times per second (depends on device).
   /// Each event contains the smoothed heading, pitch, and roll.
   Stream<DeviceOrientation> get orientationStream =>
       _orientationController.stream;
+
+  /// Update the smoothing level (switches filter parameters).
+  ///
+  /// This can be called while the sensor is running — the filters
+  /// will be recreated with the new noise parameters. There will be
+  /// a brief transient as the new filter initializes.
+  void setSmoothingLevel(SmoothingLevel level) {
+    _useKalman = true;
+    _applyKalmanSettings(level);
+  }
+
+  /// Switch back to the legacy low-pass filter.
+  void useLegacyFilter() {
+    _useKalman = false;
+    _headingFilter.reset();
+    _pitchFilter.reset();
+    _rollFilter.reset();
+    _lastSampleTime = null;
+  }
+
+  void _applyKalmanSettings(SmoothingLevel level) {
+    _headingKalman = HeadingKalmanFilter(
+      processNoise: level.processNoise,
+      measurementNoise: level.measurementNoise,
+    );
+    _pitchKalman = KalmanFilter1D(
+      processNoise: level.processNoise * 0.5, // Pitch is less noisy
+      measurementNoise: level.measurementNoise * 0.5,
+    );
+    _rollKalman = KalmanFilter1D(
+      processNoise: level.processNoise * 0.5,
+      measurementNoise: level.measurementNoise * 0.5,
+    );
+    _lastSampleTime = null;
+  }
 
   /// Start listening to sensors.
   ///
@@ -203,10 +272,33 @@ class SensorService {
     var headingDeg = math.atan2(-yH, xH) * (180.0 / math.pi);
     headingDeg = normalizeAngle(headingDeg);
 
-    // Apply smoothing filters
-    final smoothHeading = _headingFilter.filter(headingDeg);
-    final smoothPitch = _pitchFilter.filter(pitchDeg);
-    final smoothRoll = _rollFilter.filter(rollDeg);
+    // Apply smoothing filters (Kalman or legacy low-pass)
+    final double smoothHeading;
+    final double smoothPitch;
+    final double smoothRoll;
+
+    if (_useKalman &&
+        _headingKalman != null &&
+        _pitchKalman != null &&
+        _rollKalman != null) {
+      // Compute dt for Kalman prediction step
+      final now = DateTime.now();
+      final double? dt;
+      if (_lastSampleTime != null) {
+        dt = now.difference(_lastSampleTime!).inMicroseconds / 1e6;
+      } else {
+        dt = null;
+      }
+      _lastSampleTime = now;
+
+      smoothHeading = _headingKalman!.filter(headingDeg, dt: dt);
+      smoothPitch = _pitchKalman!.filter(pitchDeg, dt: dt);
+      smoothRoll = _rollKalman!.filter(rollDeg, dt: dt);
+    } else {
+      smoothHeading = _headingFilter.filter(headingDeg);
+      smoothPitch = _pitchFilter.filter(pitchDeg);
+      smoothRoll = _rollFilter.filter(rollDeg);
+    }
 
     _orientationController.add(DeviceOrientation(
       headingDeg: smoothHeading,
