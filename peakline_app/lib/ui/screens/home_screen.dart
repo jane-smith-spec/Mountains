@@ -1,8 +1,8 @@
 /// Home screen — the main menu and status dashboard.
 ///
 /// Shows live sensor readings to verify hardware works, plus
-/// navigation to all app features: live AR view, region download,
-/// and (future) photo analysis.
+/// navigation to all app features: live AR view, photo analysis,
+/// and region download.
 library;
 
 import 'package:flutter/material.dart';
@@ -12,6 +12,7 @@ import '../../data/dem_repository.dart';
 import '../../services/location_service.dart';
 import '../../services/sensor_service.dart';
 import 'live_view_screen.dart';
+import 'photo_view_screen.dart';
 import 'region_download_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -122,6 +123,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           style: FilledButton.styleFrom(
             minimumSize: const Size(double.infinity, 56),
             textStyle: const TextStyle(fontSize: 18),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Analyze a photo
+        OutlinedButton.icon(
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const PhotoViewScreen(),
+              ),
+            );
+          },
+          icon: const Icon(Icons.photo_library),
+          label: const Text('Analyze a Photo'),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 48),
           ),
         ),
         const SizedBox(height: 12),
