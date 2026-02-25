@@ -1,14 +1,19 @@
+/// Home screen — the main menu and status dashboard.
+///
+/// Shows live sensor readings to verify hardware works, plus
+/// navigation to all app features: live AR view, region download,
+/// and (future) photo analysis.
+library;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../services/sensor_service.dart';
+import '../../data/dem_repository.dart';
 import '../../services/location_service.dart';
+import '../../services/sensor_service.dart';
 import 'live_view_screen.dart';
+import 'region_download_screen.dart';
 
-/// The home screen of PeakLine.
-///
-/// Shows build progress and live sensor readings so you can verify
-/// the compass, gyro, and GPS are working on your device.
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -18,12 +23,14 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _locationError;
+  String _tileCount = '...';
+  String _diskUsage = '...';
 
   @override
   void initState() {
     super.initState();
-    // Request location permission when the screen loads
     _requestLocationPermission();
+    _loadTileStatus();
   }
 
   Future<void> _requestLocationPermission() async {
@@ -31,6 +38,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final error = await service.checkAndRequestPermission();
     if (mounted) {
       setState(() => _locationError = error);
+    }
+  }
+
+  Future<void> _loadTileStatus() async {
+    final demRepo = ref.read(demRepositoryProvider);
+    final tiles = await demRepo.availableTiles();
+    final usage = await demRepo.diskUsageLabel();
+    if (mounted) {
+      setState(() {
+        _tileCount = '${tiles.length}';
+        _diskUsage = usage;
+      });
     }
   }
 
@@ -72,167 +91,190 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             const SizedBox(height: 32),
 
-            // Build progress card
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Build Progress',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    _statusRow(context, 'Flutter project + theming', true),
-                    _statusRow(context, 'C native core (curvature, interpolation)', true),
-                    _statusRow(context, 'DEM file loader (.hgt elevation data)', true),
-                    _statusRow(context, 'Ray-casting horizon engine', true),
-                    _statusRow(context, 'Dart FFI bridge to C core', true),
-                    _statusRow(context, 'Sensor integration (compass + GPS)', true),
-                    _statusRow(context, 'Camera preview', true),
-                    _statusRow(context, 'Horizon overlay', false),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // Live sensor readings card
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Live Sensors',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Compass / orientation
-                    orientation.when(
-                      data: (o) => Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _sensorRow(
-                            context,
-                            Icons.explore,
-                            'Heading',
-                            '${o.headingDeg.toStringAsFixed(1)}°'
-                                ' ${_headingLabel(o.headingDeg)}',
-                          ),
-                          _sensorRow(
-                            context,
-                            Icons.straight,
-                            'Pitch',
-                            '${o.pitchDeg.toStringAsFixed(1)}°',
-                          ),
-                          _sensorRow(
-                            context,
-                            Icons.screen_rotation,
-                            'Roll',
-                            '${o.rollDeg.toStringAsFixed(1)}°',
-                          ),
-                        ],
-                      ),
-                      loading: () => _sensorRow(
-                        context,
-                        Icons.explore,
-                        'Compass',
-                        'Starting sensors...',
-                      ),
-                      error: (e, _) => _sensorRow(
-                        context,
-                        Icons.explore,
-                        'Compass',
-                        'Error: $e',
-                      ),
-                    ),
-
-                    const Divider(height: 24),
-
-                    // GPS location
-                    if (_locationError != null)
-                      _sensorRow(
-                        context,
-                        Icons.location_off,
-                        'GPS',
-                        _locationError!,
-                      )
-                    else
-                      location.when(
-                        data: (loc) => Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _sensorRow(
-                              context,
-                              Icons.location_on,
-                              'Latitude',
-                              '${loc.latitudeDeg.toStringAsFixed(5)}°',
-                            ),
-                            _sensorRow(
-                              context,
-                              Icons.location_on,
-                              'Longitude',
-                              '${loc.longitudeDeg.toStringAsFixed(5)}°',
-                            ),
-                            _sensorRow(
-                              context,
-                              Icons.height,
-                              'Altitude',
-                              '${loc.altitudeM.toStringAsFixed(0)}m '
-                                  '(±${loc.accuracyM.toStringAsFixed(0)}m)',
-                            ),
-                          ],
-                        ),
-                        loading: () => _sensorRow(
-                          context,
-                          Icons.location_searching,
-                          'GPS',
-                          'Getting fix...',
-                        ),
-                        error: (e, _) => _sensorRow(
-                          context,
-                          Icons.location_off,
-                          'GPS',
-                          'Error: $e',
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
+            // Action buttons
+            _buildActionButtons(theme),
             const SizedBox(height: 24),
 
-            // Launch camera button
-            FilledButton.icon(
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const LiveViewScreen(),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.camera_alt),
-              label: const Text('Launch Live View'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size(double.infinity, 56),
-                textStyle: const TextStyle(fontSize: 18),
-              ),
-            ),
+            // DEM data status
+            _buildDataCard(theme),
+            const SizedBox(height: 16),
+
+            // Live sensor readings
+            _buildSensorCard(theme, orientation, location),
           ],
         ),
       ),
     );
   }
 
-  /// Cardinal direction label for a heading.
+  Widget _buildActionButtons(ThemeData theme) {
+    return Column(
+      children: [
+        // Launch live view
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LiveViewScreen()),
+            );
+          },
+          icon: const Icon(Icons.camera_alt),
+          label: const Text('Launch Live View'),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(double.infinity, 56),
+            textStyle: const TextStyle(fontSize: 18),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Download regions
+        OutlinedButton.icon(
+          onPressed: () async {
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const RegionDownloadScreen(),
+              ),
+            );
+            // Refresh tile status when returning
+            _loadTileStatus();
+          },
+          icon: const Icon(Icons.download),
+          label: const Text('Download Elevation Data'),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 48),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDataCard(ThemeData theme) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Elevation Data',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            _infoRow(theme, Icons.grid_view, 'Tiles downloaded', _tileCount),
+            _infoRow(theme, Icons.storage, 'Disk usage', _diskUsage),
+            if (_tileCount == '0') ...[
+              const SizedBox(height: 8),
+              Text(
+                'Download elevation data to see the horizon overlay.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSensorCard(
+    ThemeData theme,
+    AsyncValue<dynamic> orientation,
+    AsyncValue<dynamic> location,
+  ) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Live Sensors',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Compass / orientation
+            orientation.when(
+              data: (o) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _sensorRow(
+                    theme,
+                    Icons.explore,
+                    'Heading',
+                    '${o.headingDeg.toStringAsFixed(1)}°'
+                        ' ${_headingLabel(o.headingDeg)}',
+                  ),
+                  _sensorRow(
+                    theme,
+                    Icons.straight,
+                    'Pitch',
+                    '${o.pitchDeg.toStringAsFixed(1)}°',
+                  ),
+                ],
+              ),
+              loading: () => _sensorRow(
+                theme,
+                Icons.explore,
+                'Compass',
+                'Starting sensors...',
+              ),
+              error: (e, _) => _sensorRow(
+                theme,
+                Icons.explore,
+                'Compass',
+                'Error: $e',
+              ),
+            ),
+
+            const Divider(height: 24),
+
+            // GPS
+            if (_locationError != null)
+              _sensorRow(theme, Icons.location_off, 'GPS', _locationError!)
+            else
+              location.when(
+                data: (loc) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _sensorRow(
+                      theme,
+                      Icons.location_on,
+                      'Position',
+                      '${loc.latitudeDeg.toStringAsFixed(4)}°N, '
+                          '${loc.longitudeDeg.toStringAsFixed(4)}°E',
+                    ),
+                    _sensorRow(
+                      theme,
+                      Icons.height,
+                      'Altitude',
+                      '${loc.altitudeM.toStringAsFixed(0)}m '
+                          '±${loc.accuracyM.toStringAsFixed(0)}m',
+                    ),
+                  ],
+                ),
+                loading: () => _sensorRow(
+                  theme,
+                  Icons.location_searching,
+                  'GPS',
+                  'Getting fix...',
+                ),
+                error: (e, _) => _sensorRow(
+                  theme,
+                  Icons.location_off,
+                  'GPS',
+                  'Error: $e',
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String _headingLabel(double heading) {
     if (heading >= 337.5 || heading < 22.5) return 'N';
     if (heading < 67.5) return 'NE';
@@ -244,27 +286,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return 'NW';
   }
 
-  Widget _statusRow(BuildContext context, String label, bool done) {
+  Widget _infoRow(ThemeData theme, IconData icon, String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          Icon(
-            done ? Icons.check_circle : Icons.radio_button_unchecked,
-            size: 18,
-            color: done
-                ? Theme.of(context).colorScheme.primary
-                : Theme.of(context).colorScheme.outline,
-          ),
+          Icon(icon, size: 18, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: done
-                    ? Theme.of(context).colorScheme.onSurface
-                    : Theme.of(context).colorScheme.outline,
-              ),
+          Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+          Text(
+            value,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -273,32 +307,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _sensorRow(
-    BuildContext context,
+    ThemeData theme,
     IconData icon,
     String label,
     String value,
   ) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3.0),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
+          Icon(icon, size: 18, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
           SizedBox(
-            width: 80,
+            width: 72,
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
           Expanded(
             child: Text(
               value,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontFamily: 'monospace',
-                  ),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+              ),
             ),
           ),
         ],
