@@ -122,12 +122,21 @@ class GyroStabilizer {
     _isStationary = rotationRate < stillnessThresholdDegPerSec;
 
     // --- Complementary filter ---
-    if (_fusedHeadingDeg == null || dt <= 0 || dt > 1.0) {
+    if (_fusedHeadingDeg == null || dt > 1.0) {
       // First sample or time gap too large — initialize from compass
       _fusedHeadingDeg = compassHeadingDeg;
       _fusedPitchDeg = compassPitchDeg;
+    } else if (dt <= 0) {
+      // Same-instant call (no time elapsed) — blend without gyro integration.
+      // We can't integrate gyro with dt=0, so just nudge toward compass.
+      _fusedHeadingDeg = _circularBlend(
+        _fusedHeadingDeg!,
+        compassHeadingDeg,
+        alpha,
+      );
+      _fusedPitchDeg = alpha * _fusedPitchDeg! + (1 - alpha) * compassPitchDeg;
     } else {
-      // Gyro prediction: integrate angular velocity
+      // Normal case: integrate gyro angular velocity, then blend with compass
       final gyroHeading = _fusedHeadingDeg! + correctedGyroZ * dt;
       final gyroPitch = _fusedPitchDeg! + correctedGyroX * dt;
 
