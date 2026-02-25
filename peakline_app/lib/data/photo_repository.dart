@@ -91,7 +91,7 @@ class PhotoMetadata {
     }
     if (hasHeading) parts.add('heading=${headingDeg!.toStringAsFixed(0)}°');
     if (focalLengthMm != null) {
-      parts.add('${focalLengthMm!.toStringAsFixed(1)}mm');
+      parts.add('${focalLengthMm!.toStringAsFixed(2)}mm');
     }
     return 'PhotoMetadata(${parts.join(', ')})';
   }
