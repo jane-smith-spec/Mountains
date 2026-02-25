@@ -2,18 +2,25 @@
 ///
 /// Full-screen camera with layered AR overlays:
 ///   Layer 1: Camera preview
-///   Layer 2: Horizon topo line (toggleable)
-///   Layer 3: Peak flags and landmark pins (toggleable)
-///   Layer 4: HUD — compass, elevation, toggle panel
+///   Layer 2: Bearing/elevation grid (optional)
+///   Layer 3: Horizon topo line (toggleable)
+///   Layer 4: Peak flags and landmark pins (toggleable)
+///   Layer 5: HUD — compass, elevation, toggle panel, capture button
+///
+/// Now supports gyro-stabilized overlay for smoother tracking.
 library;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/constants.dart';
 import '../../services/camera_service.dart';
+import '../../services/gyro_stabilizer.dart';
 import '../../services/location_service.dart';
 import '../../services/sensor_service.dart';
+import '../../services/share_service.dart';
+import '../painters/grid_painter.dart';
 import '../widgets/compass_indicator.dart';
 import '../widgets/elevation_readout.dart';
 import '../widgets/horizon_overlay.dart';
@@ -35,6 +42,12 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
     with WidgetsBindingObserver {
   bool _isInitializing = true;
   String? _error;
+  bool _showGrid = false;
+  bool _useGyroStabilization = true;
+  bool _isCapturing = false;
+
+  /// Key for the RepaintBoundary wrapping the AR content.
+  final _captureKey = GlobalKey();
 
   @override
   void initState() {
@@ -73,12 +86,51 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
     }
   }
 
+  Future<void> _captureAndShare() async {
+    if (_isCapturing) return;
+    setState(() => _isCapturing = true);
+
+    try {
+      final shareService = ref.read(shareServiceProvider);
+      final result = await shareService.captureAndSave(
+        boundaryKey: _captureKey,
+      );
+
+      if (mounted) {
+        if (result.success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Saved to ${result.filePath}'),
+              action: SnackBarAction(
+                label: 'OK',
+                onPressed: () {},
+              ),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Capture failed: ${result.error}'),
+            ),
+          );
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _isCapturing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cameraService = ref.watch(cameraServiceProvider);
-    final orientation = ref.watch(deviceOrientationProvider);
-    final location = ref.watch(deviceLocationProvider);
     final visibility = ref.watch(layerVisibilityProvider);
+
+    // Choose between gyro-stabilized and standard orientation
+    final orientationAsync = _useGyroStabilization
+        ? ref.watch(stabilizedOrientationProvider)
+        : ref.watch(deviceOrientationProvider);
+
+    final location = ref.watch(deviceLocationProvider);
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -87,53 +139,153 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
       ),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Layer 1: Camera preview (or loading/error state)
-          _buildCameraLayer(cameraService),
+      body: RepaintBoundary(
+        key: _captureKey,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Layer 1: Camera preview (or loading/error state)
+            _buildCameraLayer(cameraService),
 
-          // Layer 2: Horizon topo line overlay (toggleable)
-          if (cameraService.isInitialized && visibility.showHorizon)
-            const HorizonOverlay(),
-
-          // Layer 3: (Future) Peak flags and landmark pins will be
-          // added here once the peak database is loaded
-
-          // Layer 4: HUD widgets
-          if (cameraService.isInitialized) ...[
-            // Compass at top center
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 8,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: orientation.when(
-                  data: (o) => CompassIndicator(headingDeg: o.headingDeg),
-                  loading: () => const SizedBox.shrink(),
-                  error: (_, __) => const SizedBox.shrink(),
-                ),
-              ),
-            ),
-
-            // Toggle panel at top right
-            const TogglePanel(),
-
-            // Elevation readout at bottom left
-            Positioned(
-              bottom: MediaQuery.of(context).padding.bottom + 16,
-              left: 16,
-              child: location.when(
-                data: (loc) => ElevationReadout(
-                  altitudeM: loc.altitudeM,
-                  accuracyM: loc.accuracyM,
+            // Layer 2: Bearing/elevation grid (optional)
+            if (cameraService.isInitialized && _showGrid)
+              orientationAsync.when(
+                data: (o) => CustomPaint(
+                  size: Size.infinite,
+                  painter: GridPainter(
+                    headingDeg: o.headingDeg,
+                    pitchDeg: o.pitchDeg,
+                    hFovDeg: defaultHorizontalFovDeg,
+                    vFovDeg: defaultVerticalFovDeg,
+                  ),
                 ),
                 loading: () => const SizedBox.shrink(),
                 error: (_, __) => const SizedBox.shrink(),
               ),
-            ),
+
+            // Layer 3: Horizon topo line overlay (toggleable)
+            if (cameraService.isInitialized && visibility.showHorizon)
+              const HorizonOverlay(),
+
+            // Layer 4: (Future) Peak flags and landmark pins will be
+            // added here once the peak database is loaded
+
+            // Layer 5: HUD widgets
+            if (cameraService.isInitialized) ...[
+              // Compass at top center
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 8,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: orientationAsync.when(
+                    data: (o) => CompassIndicator(headingDeg: o.headingDeg),
+                    loading: () => const SizedBox.shrink(),
+                    error: (_, __) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+
+              // Toggle panel at top right
+              const TogglePanel(),
+
+              // Bottom bar: elevation readout + action buttons
+              Positioned(
+                bottom: MediaQuery.of(context).padding.bottom + 16,
+                left: 16,
+                right: 16,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    // Elevation readout
+                    location.when(
+                      data: (loc) => ElevationReadout(
+                        altitudeM: loc.altitudeM,
+                        accuracyM: loc.accuracyM,
+                      ),
+                      loading: () => const SizedBox.shrink(),
+                      error: (_, __) => const SizedBox.shrink(),
+                    ),
+
+                    const Spacer(),
+
+                    // Action buttons (grid, gyro, capture)
+                    _buildActionButtons(),
+                  ],
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// Bottom-right action buttons for grid, gyro toggle, and capture.
+  Widget _buildActionButtons() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Grid toggle
+        _circleButton(
+          icon: Icons.grid_on,
+          isActive: _showGrid,
+          tooltip: 'Toggle grid',
+          onTap: () => setState(() => _showGrid = !_showGrid),
+        ),
+        const SizedBox(height: 8),
+        // Gyro stabilization toggle
+        _circleButton(
+          icon: Icons.gyroscope,
+          isActive: _useGyroStabilization,
+          tooltip: _useGyroStabilization ? 'Gyro ON' : 'Gyro OFF',
+          onTap: () => setState(
+            () => _useGyroStabilization = !_useGyroStabilization,
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Capture button
+        _circleButton(
+          icon: _isCapturing ? Icons.hourglass_empty : Icons.camera,
+          isActive: false,
+          tooltip: 'Capture',
+          onTap: _isCapturing ? null : _captureAndShare,
+          size: 48,
+        ),
+      ],
+    );
+  }
+
+  Widget _circleButton({
+    required IconData icon,
+    required bool isActive,
+    required String tooltip,
+    VoidCallback? onTap,
+    double size = 36,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isActive
+                ? Colors.white.withValues(alpha: 0.3)
+                : Colors.black.withValues(alpha: 0.5),
+            border: Border.all(
+              color: isActive ? Colors.white70 : Colors.white30,
+              width: 1,
+            ),
+          ),
+          child: Icon(
+            icon,
+            color: isActive ? Colors.white : Colors.white54,
+            size: size * 0.5,
+          ),
+        ),
       ),
     );
   }
