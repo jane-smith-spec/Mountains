@@ -23,11 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Expected file sizes for the two standard .hgt resolutions */
+/* Expected file sizes for the three supported .hgt resolutions */
 #define SRTM1_SAMPLES 3601
 #define SRTM1_FILESIZE (SRTM1_SAMPLES * SRTM1_SAMPLES * 2)  /* 25,934,402 bytes */
 #define SRTM3_SAMPLES 1201
-#define SRTM3_FILESIZE (SRTM3_SAMPLES * SRTM3_SAMPLES * 2)  /* 2,884,802 bytes */
+#define SRTM3_FILESIZE (SRTM3_SAMPLES * SRTM3_SAMPLES * 2)  /*  2,884,802 bytes */
+#define SRTM9_SAMPLES  401
+#define SRTM9_FILESIZE (SRTM9_SAMPLES * SRTM9_SAMPLES * 2)  /*    321,602 bytes */
 
 /**
  * Parse the southwest corner coordinates from a .hgt filename.
@@ -125,7 +127,9 @@ int peakline_dem_load_hgt(const char *path, PeaklineDemTile *tile) {
     if (file_size == SRTM1_FILESIZE) {
         samples = SRTM1_SAMPLES;  /* 3601 — high resolution (~30m) */
     } else if (file_size == SRTM3_FILESIZE) {
-        samples = SRTM3_SAMPLES;  /* 1201 — lower resolution (~90m) */
+        samples = SRTM3_SAMPLES;  /* 1201 — medium resolution (~90m) */
+    } else if (file_size == SRTM9_FILESIZE) {
+        samples = SRTM9_SAMPLES;  /*  401 — low resolution (~250m) */
     } else {
         fclose(f);
         return -4;  /* Unrecognized file size */

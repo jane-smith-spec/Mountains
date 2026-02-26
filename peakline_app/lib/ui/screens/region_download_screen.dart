@@ -16,7 +16,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/dem_download_service.dart';
 import '../../data/dem_repository.dart';
 import '../../data/region_data.dart';
-import '../../data/tile_manager.dart';
 import '../../models/tile_index.dart';
 
 // -----------------------------------------------------------------------
@@ -41,6 +40,9 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
 
   /// Active download progress (null when idle).
   DownloadProgress? _downloadProgress;
+
+  /// Selected download quality (default to fastest/smallest).
+  DownloadQuality _quality = DownloadQuality.low;
 
   @override
   void initState() {
@@ -300,7 +302,7 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
     Set<TileIndex> available,
   ) {
     final missing = countryTiles.difference(available);
-    final sizeMB = country.bbox.estimatedSizeMB;
+    final sizeMB = countryTiles.length * _quality.approxStorageMB;
 
     return InkWell(
       onTap: () => _showRegionDetail(
@@ -355,7 +357,7 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
         stateTiles.isEmpty ? 0.0 : available.length / stateTiles.length;
     final allDone =
         available.length == stateTiles.length && stateTiles.isNotEmpty;
-    final sizeMB = state.bbox.estimatedSizeMB;
+    final sizeMB = stateTiles.length * _quality.approxStorageMB;
 
     return InkWell(
       onTap: () => _showRegionDetail(
@@ -443,137 +445,165 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
   }) {
     final available = tiles.intersection(_availableTiles);
     final missing = tiles.difference(available);
+    var sheetQuality = _quality;
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
+      builder: (sheetContext) => DraggableScrollableSheet(
         initialChildSize: 0.5,
         minChildSize: 0.3,
         maxChildSize: 0.8,
         expand: false,
-        builder: (context, scrollController) {
-          final theme = Theme.of(context);
-          final isDownloading =
-              ref.read(demDownloadServiceProvider).isDownloading;
+        builder: (sheetContext, scrollController) {
+          return StatefulBuilder(
+            builder: (sheetContext, setSheetState) {
+              final theme = Theme.of(sheetContext);
+              final isDownloading =
+                  ref.read(demDownloadServiceProvider).isDownloading;
 
-          return ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.all(16),
-            children: [
-              // Handle
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.onSurfaceVariant
-                        .withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(2),
+              return ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.all(16),
+                children: [
+                  // Handle
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              Text(
-                name,
-                style: theme.textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              if (subtitle.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+                  Text(
+                    name,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
-              ],
-              const SizedBox(height: 16),
-
-              // Stats
-              _detailRow(theme, 'Total tiles', '${tiles.length}'),
-              _detailRow(theme, 'Downloaded', '${available.length}'),
-              _detailRow(theme, 'Missing', '${missing.length}'),
-              _detailRow(theme, 'Est. download',
-                  '~${(missing.length * 25)} MB'),
-              const SizedBox(height: 16),
-
-              // Download button
-              if (missing.isNotEmpty) ...[
-                FilledButton.icon(
-                  onPressed: isDownloading
-                      ? null
-                      : () {
-                          Navigator.pop(context); // close bottom sheet
-                          _startDownload(tiles);
-                        },
-                  icon: Icon(isDownloading
-                      ? Icons.hourglass_empty
-                      : Icons.download),
-                  label: Text(isDownloading
-                      ? 'Download in progress...'
-                      : 'Download ${missing.length} tile${missing.length == 1 ? '' : 's'}'),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Free download from Copernicus open data.\n'
-                  'No account required.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-
-              if (missing.isEmpty) ...[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.check_circle,
-                        color: theme.colorScheme.primary),
-                    const SizedBox(width: 8),
+                  if (subtitle.isNotEmpty) ...[
+                    const SizedBox(height: 4),
                     Text(
-                      'All tiles downloaded',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: theme.colorScheme.primary,
-                        fontWeight: FontWeight.bold,
+                      subtitle,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
-                ),
-              ],
+                  const SizedBox(height: 16),
 
-              // Resolution tiers
-              const SizedBox(height: 24),
-              Text(
-                'Resolution tiers',
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              _detailRow(theme, '30m (0\u201310 km)',
-                  '${TileResolution.full.gridSize}\u00D7${TileResolution.full.gridSize}'),
-              _detailRow(theme, '90m (10\u201340 km)',
-                  '${TileResolution.medium.gridSize}\u00D7${TileResolution.medium.gridSize}'),
-              _detailRow(theme, '250m (40\u2013100 km)',
-                  '${TileResolution.low.gridSize}\u00D7${TileResolution.low.gridSize}'),
-
-              // Delete
-              if (available.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  onPressed: () => _confirmDelete(name, available),
-                  icon: const Icon(Icons.delete_outline),
-                  label: Text(
-                      'Delete ${available.length} tile${available.length == 1 ? '' : 's'}'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: theme.colorScheme.error,
+                  // Quality selector
+                  Text(
+                    'Download quality',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
-              ],
-            ],
+                  const SizedBox(height: 8),
+                  SegmentedButton<DownloadQuality>(
+                    segments: DownloadQuality.values.map((q) {
+                      return ButtonSegment<DownloadQuality>(
+                        value: q,
+                        label: Text(q.label),
+                      );
+                    }).toList(),
+                    selected: {sheetQuality},
+                    onSelectionChanged: (selected) {
+                      setSheetState(() => sheetQuality = selected.first);
+                      _quality = selected.first;
+                    },
+                    style: ButtonStyle(
+                      textStyle: WidgetStatePropertyAll(
+                        theme.textTheme.bodySmall,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    sheetQuality.description,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Stats
+                  _detailRow(theme, 'Total tiles', '${tiles.length}'),
+                  _detailRow(theme, 'Downloaded', '${available.length}'),
+                  _detailRow(theme, 'Missing', '${missing.length}'),
+                  _detailRow(theme, 'Est. download',
+                      '~${(missing.length * sheetQuality.approxDownloadMB).toStringAsFixed(0)} MB'),
+                  _detailRow(theme, 'Est. storage',
+                      '~${(missing.length * sheetQuality.approxStorageMB).toStringAsFixed(0)} MB'),
+                  const SizedBox(height: 16),
+
+                  // Download button
+                  if (missing.isNotEmpty) ...[
+                    FilledButton.icon(
+                      onPressed: isDownloading
+                          ? null
+                          : () {
+                              Navigator.pop(sheetContext);
+                              _startDownload(tiles, sheetQuality);
+                            },
+                      icon: Icon(isDownloading
+                          ? Icons.hourglass_empty
+                          : Icons.download),
+                      label: Text(isDownloading
+                          ? 'Download in progress...'
+                          : 'Download ${missing.length} tile${missing.length == 1 ? '' : 's'} (${sheetQuality.label})'),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Free download from Copernicus open data.\n'
+                      'No account required.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+
+                  if (missing.isEmpty) ...[
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.check_circle,
+                            color: theme.colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text(
+                          'All tiles downloaded',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  // Delete
+                  if (available.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    OutlinedButton.icon(
+                      onPressed: () => _confirmDelete(name, available),
+                      icon: const Icon(Icons.delete_outline),
+                      label: Text(
+                          'Delete ${available.length} tile${available.length == 1 ? '' : 's'}'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: theme.colorScheme.error,
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            },
           );
         },
       ),
@@ -603,11 +633,12 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
   //  Download actions
   // -----------------------------------------------------------------------
 
-  Future<void> _startDownload(Set<TileIndex> tiles) async {
+  Future<void> _startDownload(Set<TileIndex> tiles, DownloadQuality quality) async {
     final downloadService = ref.read(demDownloadServiceProvider);
 
     await downloadService.downloadTiles(
       tiles: tiles,
+      quality: quality,
       onProgress: (progress) {
         if (mounted) {
           setState(() => _downloadProgress = progress);

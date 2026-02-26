@@ -1,16 +1,14 @@
 /// DEM download service — downloads elevation tiles from Copernicus open data.
 ///
-/// Copernicus GLO-30 DEM tiles are hosted as open data on AWS S3,
-/// freely accessible without authentication. Each tile is a GeoTIFF
-/// that we convert to raw .hgt (Int16 big-endian) on-device.
+/// Copernicus DEM tiles are hosted as open data on AWS S3, freely
+/// accessible without authentication:
 ///
-/// The download URL pattern:
-///   https://copernicus-dem-30m.s3.eu-central-1.amazonaws.com/
-///     Copernicus_DSM_COG_10_N46_00_E007_00_DEM/
-///     Copernicus_DSM_COG_10_N46_00_E007_00_DEM.tif
+///   30m: copernicus-dem-30m.s3.eu-central-1.amazonaws.com  (~25 MB/tile)
+///   90m: copernicus-dem-90m.s3.eu-central-1.amazonaws.com  (~2.8 MB/tile)
 ///
-/// Each tile is ~25 MB as GeoTIFF (~50 MB uncompressed as .hgt).
-/// We download, extract the elevation band, and write as .hgt.
+/// Users choose a download quality. For "low" (250m) we download the
+/// 90m source and downsample on-device — this gives the fastest
+/// downloads (~2.8 MB) with the smallest on-disk footprint (~314 KB).
 library;
 
 import 'dart:async';
@@ -22,6 +20,61 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tile_index.dart';
 import 'dem_repository.dart';
+
+// -----------------------------------------------------------------------
+//  Download quality
+// -----------------------------------------------------------------------
+
+/// Resolution quality the user can choose for downloads.
+enum DownloadQuality {
+  /// ~250m resolution (9 arc-seconds). Download ~2.8 MB, store ~314 KB.
+  /// Fastest downloads, smallest storage. Good enough for most use cases.
+  low(
+    label: '250m (fast)',
+    description: '~314 KB/tile \u00B7 fastest download',
+    gridSize: 401,
+    approxDownloadMB: 2.8,
+    approxStorageMB: 0.3,
+  ),
+
+  /// ~90m resolution (3 arc-seconds). Download & store ~2.8 MB/tile.
+  /// Good balance of quality and size.
+  medium(
+    label: '90m',
+    description: '~2.8 MB/tile \u00B7 good detail',
+    gridSize: 1201,
+    approxDownloadMB: 2.8,
+    approxStorageMB: 2.8,
+  ),
+
+  /// ~30m resolution (1 arc-second). Download & store ~25 MB/tile.
+  /// Highest detail, largest files.
+  high(
+    label: '30m (best)',
+    description: '~25 MB/tile \u00B7 highest detail',
+    gridSize: 3601,
+    approxDownloadMB: 25.0,
+    approxStorageMB: 25.0,
+  );
+
+  const DownloadQuality({
+    required this.label,
+    required this.description,
+    required this.gridSize,
+    required this.approxDownloadMB,
+    required this.approxStorageMB,
+  });
+
+  final String label;
+  final String description;
+  final int gridSize;
+
+  /// Approximate download size per tile in MB (GeoTIFF from server).
+  final double approxDownloadMB;
+
+  /// Approximate on-disk storage per tile in MB (.hgt file).
+  final double approxStorageMB;
+}
 
 // -----------------------------------------------------------------------
 //  Download progress tracking
@@ -40,28 +93,13 @@ class DownloadProgress {
     this.error,
   });
 
-  /// Total number of tiles to download.
   final int totalTiles;
-
-  /// Tiles successfully downloaded so far.
   final int completedTiles;
-
-  /// Tiles that failed to download.
   final int failedTiles;
-
-  /// The tile currently being downloaded (null if done).
   final TileIndex? currentTile;
-
-  /// Bytes received for the current tile.
   final int currentTileBytes;
-
-  /// Total bytes expected for the current tile (0 if unknown).
   final int currentTileTotalBytes;
-
-  /// Whether the entire batch is finished (success or failure).
   final bool isComplete;
-
-  /// Error message if the download failed.
   final String? error;
 
   /// Overall progress from 0.0 to 1.0.
@@ -103,19 +141,18 @@ class DemDownloadService {
   final DemRepository demRepository;
   final Dio _dio;
 
-  /// Active cancel token — set when a download is in progress.
   CancelToken? _cancelToken;
 
-  /// Whether a download is currently in progress.
   bool get isDownloading => _cancelToken != null;
 
-  /// Download a set of tiles, reporting progress via the callback.
+  /// Download a set of tiles at the specified quality.
   ///
   /// Skips tiles that are already available locally.
   /// Returns the number of tiles successfully downloaded.
   Future<int> downloadTiles({
     required Set<TileIndex> tiles,
     required void Function(DownloadProgress) onProgress,
+    DownloadQuality quality = DownloadQuality.low,
   }) async {
     // Filter out tiles we already have
     final missing = <TileIndex>[];
@@ -138,7 +175,7 @@ class DemDownloadService {
       return 0;
     }
 
-    // Sort for deterministic order (lat then lon)
+    // Sort for deterministic order
     missing.sort((a, b) {
       final cmp = a.latDeg.compareTo(b.latDeg);
       return cmp != 0 ? cmp : a.lonDeg.compareTo(b.lonDeg);
@@ -163,6 +200,7 @@ class DemDownloadService {
 
       final success = await _downloadSingleTile(
         tile: tile,
+        quality: quality,
         onTileProgress: (received, total) {
           onProgress(DownloadProgress(
             totalTiles: missing.length,
@@ -198,23 +236,27 @@ class DemDownloadService {
     return completed;
   }
 
-  /// Cancel an in-progress download.
   void cancel() {
     _cancelToken?.cancel('User cancelled');
     _cancelToken = null;
   }
 
-  /// Download a single tile from Copernicus AWS open data.
+  /// Download a single tile at the given quality.
   Future<bool> _downloadSingleTile({
     required TileIndex tile,
+    required DownloadQuality quality,
     required void Function(int received, int total) onTileProgress,
   }) async {
-    final url = _tileUrl(tile);
+    // Low and medium both download from the 90m source (much smaller).
+    // High downloads from the 30m source.
+    final url = quality == DownloadQuality.high
+        ? _tileUrl30m(tile)
+        : _tileUrl90m(tile);
+
     final outPath = await demRepository.tileFilePath(tile);
     final tmpPath = '$outPath.tmp';
 
     try {
-      // Download the GeoTIFF
       await _dio.download(
         url,
         tmpPath,
@@ -225,17 +267,25 @@ class DemDownloadService {
       // Convert GeoTIFF → raw .hgt
       final tiffFile = File(tmpPath);
       final tiffBytes = await tiffFile.readAsBytes();
-      final hgtBytes = _geotiffToHgt(tiffBytes);
+
+      // Source grid: 1201 for 90m downloads, 3601 for 30m
+      final sourceGrid = quality == DownloadQuality.high ? 3601 : 1201;
+      final hgtBytes = _geotiffToHgt(tiffBytes, sourceGrid);
 
       if (hgtBytes != null) {
-        await File(outPath).writeAsBytes(hgtBytes);
+        // If low quality, downsample from 1201 → 401
+        if (quality == DownloadQuality.low) {
+          final downsampled = _downsampleHgt(hgtBytes, 1201, 401);
+          await File(outPath).writeAsBytes(downsampled);
+        } else {
+          await File(outPath).writeAsBytes(hgtBytes);
+        }
       } else {
-        // Fallback: if conversion fails, keep the raw download
-        // (might be a raw .hgt already from alternative sources)
+        // Fallback: keep the raw download
         await tiffFile.rename(outPath);
       }
 
-      // Clean up temp file if it still exists
+      // Clean up temp file
       final tmp = File(tmpPath);
       if (await tmp.exists()) await tmp.delete();
 
@@ -243,26 +293,26 @@ class DemDownloadService {
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) return false;
 
-      // 404 means this tile is ocean — write a flat (sea-level) tile
       if (e.response?.statusCode == 404) {
-        await _writeFlatTile(outPath);
+        await _writeFlatTile(outPath, quality.gridSize);
         return true;
       }
 
-      // Clean up partial download
       final tmp = File(tmpPath);
       if (await tmp.exists()) await tmp.delete();
       return false;
     } catch (_) {
-      // Clean up partial download
       final tmp = File(tmpPath);
       if (await tmp.exists()) await tmp.delete();
       return false;
     }
   }
 
-  /// Build the Copernicus tile URL on AWS S3 open data.
-  static String _tileUrl(TileIndex tile) {
+  // -----------------------------------------------------------------------
+  //  URL builders
+  // -----------------------------------------------------------------------
+
+  static String _tileUrl30m(TileIndex tile) {
     final ns = tile.latDeg >= 0 ? 'N' : 'S';
     final ew = tile.lonDeg >= 0 ? 'E' : 'W';
     final lat = tile.latDeg.abs().toString().padLeft(2, '0');
@@ -272,42 +322,79 @@ class DemDownloadService {
         '$name/$name.tif';
   }
 
+  static String _tileUrl90m(TileIndex tile) {
+    final ns = tile.latDeg >= 0 ? 'N' : 'S';
+    final ew = tile.lonDeg >= 0 ? 'E' : 'W';
+    final lat = tile.latDeg.abs().toString().padLeft(2, '0');
+    final lon = tile.lonDeg.abs().toString().padLeft(3, '0');
+    final name = 'Copernicus_DSM_COG_30_${ns}${lat}_00_${ew}${lon}_00_DEM';
+    return 'https://copernicus-dem-90m.s3.eu-central-1.amazonaws.com/'
+        '$name/$name.tif';
+  }
+
+  // -----------------------------------------------------------------------
+  //  Downsampling
+  // -----------------------------------------------------------------------
+
+  /// Downsample an .hgt byte buffer from one grid size to another.
+  ///
+  /// Both are big-endian Int16. Uses nearest-neighbor sampling.
+  static Uint8List _downsampleHgt(
+      Uint8List source, int sourceSize, int targetSize) {
+    final srcData = ByteData.sublistView(source);
+    final dst = ByteData(targetSize * targetSize * 2);
+
+    for (int row = 0; row < targetSize; row++) {
+      // Map target row to source row
+      final srcRow =
+          ((row * (sourceSize - 1)) / (targetSize - 1)).round();
+      for (int col = 0; col < targetSize; col++) {
+        final srcCol =
+            ((col * (sourceSize - 1)) / (targetSize - 1)).round();
+        final srcIdx = (srcRow * sourceSize + srcCol) * 2;
+        final dstIdx = (row * targetSize + col) * 2;
+
+        if (srcIdx + 1 < source.length) {
+          dst.setInt16(dstIdx, srcData.getInt16(srcIdx, Endian.big), Endian.big);
+        }
+      }
+    }
+
+    return dst.buffer.asUint8List();
+  }
+
+  // -----------------------------------------------------------------------
+  //  GeoTIFF → .hgt conversion
+  // -----------------------------------------------------------------------
+
   /// Extract elevation data from a GeoTIFF into raw .hgt format.
   ///
-  /// Copernicus GLO-30 GeoTIFFs are single-band Float32 with LZW
-  /// compression. We parse the TIFF structure to find the image data,
-  /// convert Float32 → Int16, and write as big-endian (SRTM convention).
-  ///
-  /// Returns null if we can't parse the TIFF (caller should handle).
-  static Uint8List? _geotiffToHgt(Uint8List tiffBytes) {
+  /// [expectedGrid] is the expected dimension (1201 for 90m, 3601 for 30m).
+  /// Returns null if we can't parse the TIFF.
+  static Uint8List? _geotiffToHgt(Uint8List tiffBytes, int expectedGrid) {
     try {
-      // TIFF files start with byte order marker
       if (tiffBytes.length < 8) return null;
 
       final byteData = ByteData.sublistView(tiffBytes);
       final isLittle = tiffBytes[0] == 0x49; // 'II' = little-endian
-      if (!isLittle && tiffBytes[0] != 0x4D) return null; // not a TIFF
+      if (!isLittle && tiffBytes[0] != 0x4D) return null;
 
-      // Check magic number 42
       final magic = isLittle
           ? byteData.getUint16(2, Endian.little)
           : byteData.getUint16(2, Endian.big);
       if (magic != 42) return null;
 
-      // Read first IFD offset
       var ifdOffset = isLittle
           ? byteData.getUint32(4, Endian.little)
           : byteData.getUint32(4, Endian.big);
 
-      // Parse IFD entries to find image dimensions and strip offsets
       int width = 0, height = 0;
-      int bitsPerSample = 0, sampleFormat = 0;
       final stripOffsets = <int>[];
       final stripByteCounts = <int>[];
       int tileWidth = 0, tileHeight = 0;
       final tileOffsets = <int>[];
       final tileByteCounts = <int>[];
-      int compression = 1; // 1 = no compression
+      int compression = 1;
 
       int readU16(int off) => isLittle
           ? byteData.getUint16(off, Endian.little)
@@ -330,7 +417,6 @@ class DemDownloadService {
         return result;
       }
 
-      // Parse IFD
       if (ifdOffset + 2 > tiffBytes.length) return null;
       final entryCount = readU16(ifdOffset);
       ifdOffset += 2;
@@ -344,51 +430,48 @@ class DemDownloadService {
         final count = readU32(entryOff + 4);
         final valueOff = entryOff + 8;
 
-        // Type sizes: 1=byte(1), 2=ascii(1), 3=short(2), 4=long(4)
-        final typeSize = (type == 3) ? 2 : (type == 4) ? 4 : (type == 1) ? 1 : 4;
+        final typeSize =
+            (type == 3) ? 2 : (type == 4) ? 4 : (type == 1) ? 1 : 4;
         final totalBytes = count * typeSize;
-        // If value fits in 4 bytes, it's inline; otherwise it's an offset
-        final dataOffset = totalBytes <= 4 ? valueOff : readU32(valueOff);
+        final dataOffset =
+            totalBytes <= 4 ? valueOff : readU32(valueOff);
 
         switch (tag) {
-          case 256: // ImageWidth
-            width = totalBytes <= 4 ? (typeSize == 2 ? readU16(valueOff) : readU32(valueOff)) : readU32(dataOffset);
-          case 257: // ImageLength
-            height = totalBytes <= 4 ? (typeSize == 2 ? readU16(valueOff) : readU32(valueOff)) : readU32(dataOffset);
-          case 258: // BitsPerSample
-            bitsPerSample = typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
-          case 259: // Compression
-            compression = typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
-          case 273: // StripOffsets
+          case 256:
+            width = totalBytes <= 4
+                ? (typeSize == 2 ? readU16(valueOff) : readU32(valueOff))
+                : readU32(dataOffset);
+          case 257:
+            height = totalBytes <= 4
+                ? (typeSize == 2 ? readU16(valueOff) : readU32(valueOff))
+                : readU32(dataOffset);
+          case 259:
+            compression =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
+          case 273:
             stripOffsets.addAll(readArray(count, dataOffset, typeSize));
-          case 279: // StripByteCounts
+          case 279:
             stripByteCounts.addAll(readArray(count, dataOffset, typeSize));
-          case 322: // TileWidth
-            tileWidth = typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
-          case 323: // TileLength
-            tileHeight = typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
-          case 324: // TileOffsets
+          case 322:
+            tileWidth =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
+          case 323:
+            tileHeight =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
+          case 324:
             tileOffsets.addAll(readArray(count, dataOffset, typeSize));
-          case 325: // TileByteCounts
+          case 325:
             tileByteCounts.addAll(readArray(count, dataOffset, typeSize));
-          case 339: // SampleFormat
-            sampleFormat = typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
         }
       }
 
       if (width == 0 || height == 0) return null;
+      if (compression != 1) return null; // Can't decode compressed TIFFs
 
-      // For compressed TIFFs (LZW, Deflate, etc.) we can't easily decode
-      // on-device without a full TIFF library. In that case, return null
-      // and let the caller keep the raw file.
-      // Compression: 1=none, 5=LZW, 8=deflate, 32773=PackBits
-      if (compression != 1) return null;
-
-      // Read uncompressed float data
+      // Read float data
       Float32List? floats;
 
       if (tileOffsets.isNotEmpty && tileWidth > 0) {
-        // Tiled TIFF
         final tilesAcross = (width + tileWidth - 1) ~/ tileWidth;
         final tilesDown = (height + tileHeight - 1) ~/ tileHeight;
         floats = Float32List(width * height);
@@ -416,7 +499,6 @@ class DemDownloadService {
           }
         }
       } else if (stripOffsets.isNotEmpty) {
-        // Stripped TIFF
         floats = Float32List(width * height);
         int pixelIdx = 0;
         for (int s = 0; s < stripOffsets.length; s++) {
@@ -426,7 +508,9 @@ class DemDownloadService {
               : (width * height * 4 - pixelIdx * 4);
           final pixelCount = byteCount ~/ 4;
 
-          for (int p = 0; p < pixelCount && pixelIdx < width * height; p++) {
+          for (int p = 0;
+              p < pixelCount && pixelIdx < width * height;
+              p++) {
             final srcOff = offset + p * 4;
             if (srcOff + 4 > tiffBytes.length) break;
             final val = isLittle
@@ -439,11 +523,10 @@ class DemDownloadService {
         return null;
       }
 
-      // Convert Float32 → Int16 big-endian (.hgt format)
+      // Convert Float32 → Int16 big-endian
       final hgt = ByteData(width * height * 2);
       for (int i = 0; i < floats.length; i++) {
         var val = floats[i];
-        // Clamp to Int16 range, treat nodata as -32768
         if (val.isNaN || val < -500) {
           hgt.setInt16(i * 2, -32768, Endian.big);
         } else {
@@ -459,10 +542,8 @@ class DemDownloadService {
   }
 
   /// Write a flat (sea-level) .hgt tile for ocean areas.
-  static Future<void> _writeFlatTile(String path) async {
-    // Standard SRTM tile: 3601 × 3601 × 2 bytes = 25,934,402 bytes
-    const gridSize = 3601;
-    final bytes = Uint8List(gridSize * gridSize * 2); // all zeros = sea level
+  static Future<void> _writeFlatTile(String path, int gridSize) async {
+    final bytes = Uint8List(gridSize * gridSize * 2);
     await File(path).writeAsBytes(bytes);
   }
 }
