@@ -185,62 +185,125 @@ class PhotoRepository {
     final tag = tags[key];
     if (tag == null) return null;
 
+    // Try structured IfdRatios first (degrees, minutes, seconds)
     final values = tag.values;
     if (values is IfdRatios && values.ratios.length >= 3) {
       final ratios = values.ratios;
+      // Guard against zero denominators (produces NaN)
+      if (ratios[0].denominator == 0) return null;
       final degrees = ratios[0].numerator / ratios[0].denominator;
-      final minutes = ratios[1].numerator / ratios[1].denominator;
-      final seconds = ratios[2].numerator / ratios[2].denominator;
-      return degrees + minutes / 60.0 + seconds / 3600.0;
+      final minutes = ratios[1].denominator != 0
+          ? ratios[1].numerator / ratios[1].denominator
+          : 0.0;
+      final seconds = ratios[2].denominator != 0
+          ? ratios[2].numerator / ratios[2].denominator
+          : 0.0;
+      final result = degrees + minutes / 60.0 + seconds / 3600.0;
+      if (result.isNaN || result.isInfinite) return null;
+      return result;
     }
-    return null;
+
+    // Fallback: parse from the printable representation
+    // Some devices/formats produce strings like "[47, 15, 23.456]"
+    // or "47/1, 15/1, 2345/100"
+    return _parseCoordinateFromPrintable(tag.printable);
+  }
+
+  double? _parseCoordinateFromPrintable(String printable) {
+    try {
+      // Strip brackets
+      var s = printable.trim();
+      if (s.startsWith('[')) s = s.substring(1);
+      if (s.endsWith(']')) s = s.substring(0, s.length - 1);
+
+      final parts = s.split(',').map((p) => p.trim()).toList();
+      if (parts.length < 3) return null;
+
+      double parseComponent(String c) {
+        if (c.contains('/')) {
+          final frac = c.split('/');
+          final num = double.parse(frac[0].trim());
+          final den = double.parse(frac[1].trim());
+          return den != 0 ? num / den : 0.0;
+        }
+        return double.parse(c);
+      }
+
+      final degrees = parseComponent(parts[0]);
+      final minutes = parseComponent(parts[1]);
+      final seconds = parseComponent(parts[2]);
+      final result = degrees + minutes / 60.0 + seconds / 3600.0;
+      if (result.isNaN || result.isInfinite) return null;
+      return result;
+    } catch (_) {
+      return null;
+    }
   }
 
   double? _parseGpsAltitude(Map<String, IfdTag> tags) {
     final tag = tags['GPS GPSAltitude'];
     if (tag == null) return null;
 
-    final values = tag.values;
-    if (values is IfdRatios && values.ratios.isNotEmpty) {
-      final ratio = values.ratios.first;
-      if (ratio.denominator == 0) return null;
-      double alt = ratio.numerator / ratio.denominator;
+    double? alt = _parseRatio(tag);
+    if (alt == null) return null;
 
-      // Check altitude ref: 0 = above sea level, 1 = below
-      final ref = tags['GPS GPSAltitudeRef'];
-      if (ref != null && ref.values.toString() == '1') {
-        alt = -alt;
-      }
-      return alt;
+    // Check altitude ref: 0 = above sea level, 1 = below
+    final ref = tags['GPS GPSAltitudeRef'];
+    if (ref != null && ref.printable.trim() == '1') {
+      alt = -alt;
     }
-    return null;
+    return alt;
   }
 
   double? _parseGpsHeading(Map<String, IfdTag> tags) {
     // GPS ImgDirection is the compass heading the camera faced
     final tag = tags['GPS GPSImgDirection'];
     if (tag == null) return null;
-
-    final values = tag.values;
-    if (values is IfdRatios && values.ratios.isNotEmpty) {
-      final ratio = values.ratios.first;
-      if (ratio.denominator == 0) return null;
-      return ratio.numerator / ratio.denominator;
-    }
-    return null;
+    return _parseRatio(tag);
   }
 
   double? _parseFocalLength(Map<String, IfdTag> tags) {
     final tag = tags['EXIF FocalLength'];
     if (tag == null) return null;
+    return _parseRatio(tag);
+  }
 
+  /// Parse a single rational EXIF value (altitude, heading, focal length).
+  double? _parseRatio(IfdTag tag) {
     final values = tag.values;
     if (values is IfdRatios && values.ratios.isNotEmpty) {
       final ratio = values.ratios.first;
       if (ratio.denominator == 0) return null;
-      return ratio.numerator / ratio.denominator;
+      final result = ratio.numerator / ratio.denominator;
+      if (result.isNaN || result.isInfinite) return null;
+      return result.toDouble();
     }
-    return null;
+
+    // Fallback: parse from printable (e.g., "1234/100" or "12.34")
+    return _parseRatioFromPrintable(tag.printable);
+  }
+
+  double? _parseRatioFromPrintable(String printable) {
+    try {
+      var s = printable.trim();
+      if (s.isEmpty) return null;
+
+      // Handle "numerator/denominator" format
+      if (s.contains('/')) {
+        final parts = s.split('/');
+        final num = double.parse(parts[0].trim());
+        final den = double.parse(parts[1].trim());
+        if (den == 0) return null;
+        final result = num / den;
+        return (result.isNaN || result.isInfinite) ? null : result;
+      }
+
+      // Plain number
+      final result = double.parse(s);
+      return (result.isNaN || result.isInfinite) ? null : result;
+    } catch (_) {
+      return null;
+    }
   }
 
   DateTime? _parseDateTime(Map<String, IfdTag> tags) {
