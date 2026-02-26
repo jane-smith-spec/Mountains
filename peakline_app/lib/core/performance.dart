@@ -228,8 +228,8 @@ class ProjectionCache {
     // Handle 0°/360° wrap for heading
     final wrappedDHeading = dHeading > 180 ? 360 - dHeading : dHeading;
 
-    if (wrappedDHeading < headingToleranceDeg &&
-        dPitch < pitchToleranceDeg) {
+    if (wrappedDHeading <= headingToleranceDeg &&
+        dPitch <= pitchToleranceDeg) {
       return _cachedPoints;
     }
 
