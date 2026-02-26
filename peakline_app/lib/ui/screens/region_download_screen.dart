@@ -6,13 +6,14 @@
 /// Users can download an entire country (broad) or pick individual
 /// states/provinces (fine-grained) depending on their storage budget.
 ///
-/// DEM data is required for the horizon computation. Without it,
-/// the app can show the camera and sensors but no topo overlay.
+/// Tiles are downloaded directly from Copernicus open data (AWS S3),
+/// no account or authentication required.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/dem_download_service.dart';
 import '../../data/dem_repository.dart';
 import '../../data/region_data.dart';
 import '../../data/tile_manager.dart';
@@ -37,6 +38,9 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
 
   /// Which countries are currently expanded in the list.
   final Set<String> _expandedCountries = {};
+
+  /// Active download progress (null when idle).
+  DownloadProgress? _downloadProgress;
 
   @override
   void initState() {
@@ -68,25 +72,80 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
+          : Column(
               children: [
-                // Storage card
-                _buildStorageCard(theme),
-                const SizedBox(height: 12),
+                // Download progress bar (visible during downloads)
+                if (_downloadProgress != null &&
+                    !_downloadProgress!.isComplete)
+                  _buildDownloadBanner(theme),
 
-                // Tile count
-                Text(
-                  '${_availableTiles.length} tile${_availableTiles.length == 1 ? '' : 's'} downloaded',
-                  style: theme.textTheme.titleMedium,
+                // Main content
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      _buildStorageCard(theme),
+                      const SizedBox(height: 12),
+                      Text(
+                        '${_availableTiles.length} tile${_availableTiles.length == 1 ? '' : 's'} downloaded',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 16),
+                      ...kCountryCatalog.map(
+                          (country) => _buildCountrySection(theme, country)),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 16),
-
-                // Country list
-                ...kCountryCatalog
-                    .map((country) => _buildCountrySection(theme, country)),
               ],
             ),
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  //  Download progress banner
+  // -----------------------------------------------------------------------
+
+  Widget _buildDownloadBanner(ThemeData theme) {
+    final p = _downloadProgress!;
+    return Container(
+      color: theme.colorScheme.primaryContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  p.statusText,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: _cancelDownload,
+                child: Text(
+                  'Cancel',
+                  style: TextStyle(color: theme.colorScheme.onPrimaryContainer),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          LinearProgressIndicator(
+            value: p.overallProgress,
+            backgroundColor:
+                theme.colorScheme.onPrimaryContainer.withValues(alpha: 0.2),
+          ),
+        ],
+      ),
     );
   }
 
@@ -137,7 +196,8 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
     final available = countryTiles.intersection(_availableTiles);
     final progress =
         countryTiles.isEmpty ? 0.0 : available.length / countryTiles.length;
-    final allDone = available.length == countryTiles.length && countryTiles.isNotEmpty;
+    final allDone =
+        available.length == countryTiles.length && countryTiles.isNotEmpty;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -156,13 +216,14 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
               });
             },
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Column(
                 children: [
                   Row(
                     children: [
-                      // Flag + name
-                      Text(country.emoji, style: const TextStyle(fontSize: 22)),
+                      Text(country.emoji,
+                          style: const TextStyle(fontSize: 22)),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(
@@ -184,7 +245,6 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                           ],
                         ),
                       ),
-                      // Status indicator
                       if (allDone)
                         Icon(Icons.check_circle,
                             color: theme.colorScheme.primary, size: 20)
@@ -198,18 +258,16 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                         ),
                       const SizedBox(width: 4),
                       Icon(
-                        isExpanded
-                            ? Icons.expand_less
-                            : Icons.expand_more,
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ],
                   ),
                   const SizedBox(height: 8),
-                  // Progress bar for the whole country
                   LinearProgressIndicator(
                     value: progress,
-                    backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                    backgroundColor:
+                        theme.colorScheme.surfaceContainerHighest,
                   ),
                 ],
               ),
@@ -219,10 +277,9 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
           // Expanded: show individual state rows
           if (isExpanded) ...[
             const Divider(height: 1),
-            // "Download entire country" row
-            _buildCountryDownloadRow(theme, country, countryTiles, available),
+            _buildCountryDownloadRow(
+                theme, country, countryTiles, available),
             const Divider(height: 1),
-            // Individual states
             ...country.states.map(
               (state) => _buildStateRow(theme, country, state),
             ),
@@ -310,7 +367,6 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Row(
           children: [
-            // Indented with a dot
             const SizedBox(width: 28),
             Expanded(
               child: Column(
@@ -398,6 +454,9 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
         expand: false,
         builder: (context, scrollController) {
           final theme = Theme.of(context);
+          final isDownloading =
+              ref.read(demDownloadServiceProvider).isDownloading;
+
           return ListView(
             controller: scrollController,
             padding: const EdgeInsets.all(16),
@@ -436,62 +495,57 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
               _detailRow(theme, 'Total tiles', '${tiles.length}'),
               _detailRow(theme, 'Downloaded', '${available.length}'),
               _detailRow(theme, 'Missing', '${missing.length}'),
-              _detailRow(theme, 'Est. size',
-                  '~${(tiles.length * 25).toStringAsFixed(0)} MB (full res)'),
+              _detailRow(theme, 'Est. download',
+                  '~${(missing.length * 25)} MB'),
               const SizedBox(height: 16),
 
-              // Download instructions
-              if (missing.isNotEmpty)
-                Card(
-                  color: theme.colorScheme.secondaryContainer,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'How to get elevation data',
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '1. Register at Copernicus (free)\n'
-                          '2. Run the prepare_dem_tiles.py tool\n'
-                          '3. Copy .hgt files to the app\'s dem_tiles/ folder\n\n'
-                          'Missing tiles:',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 4),
-                        Wrap(
-                          spacing: 4,
-                          runSpacing: 4,
-                          children: (missing.toList()
-                                ..sort((a, b) {
-                                  final cmp = a.latDeg.compareTo(b.latDeg);
-                                  return cmp != 0
-                                      ? cmp
-                                      : a.lonDeg.compareTo(b.lonDeg);
-                                }))
-                              .map((t) => Chip(
-                                    label: Text(
-                                      t.hgtFilename,
-                                      style: const TextStyle(fontSize: 10),
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    materialTapTargetSize:
-                                        MaterialTapTargetSize.shrinkWrap,
-                                  ))
-                              .toList(),
-                        ),
-                      ],
-                    ),
-                  ),
+              // Download button
+              if (missing.isNotEmpty) ...[
+                FilledButton.icon(
+                  onPressed: isDownloading
+                      ? null
+                      : () {
+                          Navigator.pop(context); // close bottom sheet
+                          _startDownload(tiles);
+                        },
+                  icon: Icon(isDownloading
+                      ? Icons.hourglass_empty
+                      : Icons.download),
+                  label: Text(isDownloading
+                      ? 'Download in progress...'
+                      : 'Download ${missing.length} tile${missing.length == 1 ? '' : 's'}'),
                 ),
+                const SizedBox(height: 8),
+                Text(
+                  'Free download from Copernicus open data.\n'
+                  'No account required.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+
+              if (missing.isEmpty) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.check_circle,
+                        color: theme.colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Text(
+                      'All tiles downloaded',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
 
               // Resolution tiers
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
               Text(
                 'Resolution tiers',
                 style: theme.textTheme.titleSmall?.copyWith(
@@ -542,6 +596,44 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  //  Download actions
+  // -----------------------------------------------------------------------
+
+  Future<void> _startDownload(Set<TileIndex> tiles) async {
+    final downloadService = ref.read(demDownloadServiceProvider);
+
+    await downloadService.downloadTiles(
+      tiles: tiles,
+      onProgress: (progress) {
+        if (mounted) {
+          setState(() => _downloadProgress = progress);
+
+          // Refresh status when done
+          if (progress.isComplete) {
+            _loadStatus();
+
+            // Show result snackbar
+            final msg = progress.failedTiles > 0
+                ? '${progress.completedTiles} downloaded, ${progress.failedTiles} failed'
+                : '${progress.completedTiles} tiles downloaded';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(msg)),
+            );
+          }
+        }
+      },
+    );
+  }
+
+  void _cancelDownload() {
+    ref.read(demDownloadServiceProvider).cancel();
+    setState(() => _downloadProgress = null);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Download cancelled')),
     );
   }
 
