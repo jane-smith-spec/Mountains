@@ -236,7 +236,7 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
         const SizedBox(height: 8),
         // Gyro stabilization toggle
         _circleButton(
-          icon: Icons.gyroscope,
+          icon: Icons.screen_rotation,
           isActive: _useGyroStabilization,
           tooltip: _useGyroStabilization ? 'Gyro ON' : 'Gyro OFF',
           onTap: () => setState(
