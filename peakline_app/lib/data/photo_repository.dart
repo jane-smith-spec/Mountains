@@ -15,6 +15,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:exif/exif.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -122,19 +123,28 @@ class PhotoRepository {
     final xFile = await _picker.pickImage(source: ImageSource.gallery);
     if (xFile == null) return null;
 
-    final metadata = await extractMetadata(xFile.path);
+    // Read bytes via XFile.readAsBytes() — this properly handles Android
+    // content URIs. Using File(xFile.path).readAsBytes() can fail on
+    // subsequent picks when the cached file or URI permissions expire.
+    final bytes = await xFile.readAsBytes();
+    final metadata = await extractMetadataFromBytes(bytes);
     return ImportedPhoto(
       filePath: xFile.path,
       metadata: metadata,
     );
   }
 
-  /// Extract EXIF metadata from a photo file.
+  /// Extract EXIF metadata from a photo file on disk.
+  ///
+  /// Prefer passing bytes directly via [extractMetadataFromBytes] when
+  /// you already have them (e.g. from XFile.readAsBytes()), since that
+  /// avoids issues with Android content URI permissions expiring.
   Future<PhotoMetadata> extractMetadata(String filePath) async {
     try {
       final bytes = await File(filePath).readAsBytes();
       return extractMetadataFromBytes(bytes);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('PhotoRepository: failed to read file $filePath: $e');
       return const PhotoMetadata();
     }
   }
