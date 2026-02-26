@@ -1,10 +1,10 @@
-/// Region download screen — select and download DEM elevation data.
+/// Region download screen — browse and download DEM elevation data.
 ///
-/// This screen lets users:
-///   1. Pick from predefined popular regions (Swiss Alps, etc.)
-///   2. See which tiles are available vs. missing for their area
-///   3. Monitor disk usage
-///   4. Delete downloaded data they no longer need
+/// Two-level hierarchy:
+///   Country → State/Province
+///
+/// Users can download an entire country (broad) or pick individual
+/// states/provinces (fine-grained) depending on their storage budget.
 ///
 /// DEM data is required for the horizon computation. Without it,
 /// the app can show the camera and sensors but no topo overlay.
@@ -14,89 +14,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/dem_repository.dart';
+import '../../data/region_data.dart';
 import '../../data/tile_manager.dart';
 import '../../models/tile_index.dart';
-
-// -----------------------------------------------------------------------
-//  Predefined regions
-// -----------------------------------------------------------------------
-
-/// A predefined region that users can quickly select.
-class RegionPreset {
-  const RegionPreset({
-    required this.name,
-    required this.description,
-    required this.centerLat,
-    required this.centerLon,
-    required this.radiusKm,
-  });
-
-  final String name;
-  final String description;
-  final double centerLat;
-  final double centerLon;
-  final double radiusKm;
-}
-
-/// Popular regions. Ordered roughly by expected user demand.
-const List<RegionPreset> kRegionPresets = [
-  RegionPreset(
-    name: 'Swiss Alps',
-    description: 'Matterhorn, Eiger, Jungfrau, Mont Blanc area',
-    centerLat: 46.5,
-    centerLon: 7.8,
-    radiusKm: 100,
-  ),
-  RegionPreset(
-    name: 'Austrian Alps',
-    description: 'Tyrol, Grossglockner, Dachstein',
-    centerLat: 47.1,
-    centerLon: 12.0,
-    radiusKm: 100,
-  ),
-  RegionPreset(
-    name: 'Dolomites',
-    description: 'Tre Cime, Marmolada, South Tyrol',
-    centerLat: 46.4,
-    centerLon: 11.8,
-    radiusKm: 60,
-  ),
-  RegionPreset(
-    name: 'French Alps',
-    description: 'Chamonix, Vanoise, Écrins',
-    centerLat: 45.5,
-    centerLon: 6.5,
-    radiusKm: 80,
-  ),
-  RegionPreset(
-    name: 'Colorado Rockies',
-    description: 'Front Range, 14ers, Rocky Mountain NP',
-    centerLat: 39.5,
-    centerLon: -105.8,
-    radiusKm: 100,
-  ),
-  RegionPreset(
-    name: 'Pacific Northwest',
-    description: 'Mt. Rainier, Mt. Hood, Cascades',
-    centerLat: 46.8,
-    centerLon: -121.8,
-    radiusKm: 100,
-  ),
-  RegionPreset(
-    name: 'Pyrenees',
-    description: 'Aneto, Monte Perdido, Franco-Spanish border',
-    centerLat: 42.6,
-    centerLon: 0.5,
-    radiusKm: 80,
-  ),
-  RegionPreset(
-    name: 'Scottish Highlands',
-    description: 'Ben Nevis, Cairngorms',
-    centerLat: 56.8,
-    centerLon: -5.0,
-    radiusKm: 80,
-  ),
-];
 
 // -----------------------------------------------------------------------
 //  Screen
@@ -114,6 +34,9 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
   String _diskUsage = '...';
   Set<TileIndex> _availableTiles = {};
   bool _loading = true;
+
+  /// Which countries are currently expanded in the list.
+  final Set<String> _expandedCountries = {};
 
   @override
   void initState() {
@@ -148,26 +71,28 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                // Disk usage summary
+                // Storage card
                 _buildStorageCard(theme),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
 
-                // Available tiles count
+                // Tile count
                 Text(
                   '${_availableTiles.length} tile${_availableTiles.length == 1 ? '' : 's'} downloaded',
                   style: theme.textTheme.titleMedium,
                 ),
                 const SizedBox(height: 16),
 
-                // Region presets
-                ...kRegionPresets.map((region) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _buildRegionCard(theme, region),
-                    )),
+                // Country list
+                ...kCountryCatalog
+                    .map((country) => _buildCountrySection(theme, country)),
               ],
             ),
     );
   }
+
+  // -----------------------------------------------------------------------
+  //  Storage card
+  // -----------------------------------------------------------------------
 
   Widget _buildStorageCard(ThemeData theme) {
     return Card(
@@ -202,75 +127,266 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
     );
   }
 
-  Widget _buildRegionCard(ThemeData theme, RegionPreset region) {
-    // Count how many tiles this region needs vs. how many we have
-    final needed = TileIndex.tilesForRadius(
-      region.centerLat,
-      region.centerLon,
-      region.radiusKm,
-    );
-    final available = needed.intersection(_availableTiles);
-    final progress = needed.isEmpty ? 0.0 : available.length / needed.length;
-    final allDownloaded = available.length == needed.length;
+  // -----------------------------------------------------------------------
+  //  Country section — expandable with state rows
+  // -----------------------------------------------------------------------
+
+  Widget _buildCountrySection(ThemeData theme, Country country) {
+    final isExpanded = _expandedCountries.contains(country.code);
+    final countryTiles = country.tiles;
+    final available = countryTiles.intersection(_availableTiles);
+    final progress =
+        countryTiles.isEmpty ? 0.0 : available.length / countryTiles.length;
+    final allDone = available.length == countryTiles.length && countryTiles.isNotEmpty;
 
     return Card(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _showRegionDetail(region, needed, available),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+      margin: const EdgeInsets.only(bottom: 8),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          // Country header — tap to expand/collapse
+          InkWell(
+            onTap: () {
+              setState(() {
+                if (isExpanded) {
+                  _expandedCountries.remove(country.code);
+                } else {
+                  _expandedCountries.add(country.code);
+                }
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Column(
                 children: [
-                  Expanded(
-                    child: Text(
-                      region.name,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
+                  Row(
+                    children: [
+                      // Flag + name
+                      Text(country.emoji, style: const TextStyle(fontSize: 22)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              country.name,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              '${country.states.length} region${country.states.length == 1 ? '' : 's'}'
+                              ' \u00B7 ${countryTiles.length} tile${countryTiles.length == 1 ? '' : 's'}',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ),
-                  if (allDownloaded)
-                    Icon(Icons.check_circle,
-                        color: theme.colorScheme.primary, size: 20)
-                  else
-                    Text(
-                      '${available.length}/${needed.length}',
-                      style: theme.textTheme.bodySmall?.copyWith(
+                      // Status indicator
+                      if (allDone)
+                        Icon(Icons.check_circle,
+                            color: theme.colorScheme.primary, size: 20)
+                      else if (available.isNotEmpty)
+                        Text(
+                          '${available.length}/${countryTiles.length}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        isExpanded
+                            ? Icons.expand_less
+                            : Icons.expand_more,
                         color: theme.colorScheme.onSurfaceVariant,
-                        fontFamily: 'monospace',
                       ),
-                    ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // Progress bar for the whole country
+                  LinearProgressIndicator(
+                    value: progress,
+                    backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                  ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text(
-                region.description,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+
+          // Expanded: show individual state rows
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            // "Download entire country" row
+            _buildCountryDownloadRow(theme, country, countryTiles, available),
+            const Divider(height: 1),
+            // Individual states
+            ...country.states.map(
+              (state) => _buildStateRow(theme, country, state),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  //  "Download entire country" row
+  // -----------------------------------------------------------------------
+
+  Widget _buildCountryDownloadRow(
+    ThemeData theme,
+    Country country,
+    Set<TileIndex> countryTiles,
+    Set<TileIndex> available,
+  ) {
+    final missing = countryTiles.difference(available);
+    final sizeMB = country.bbox.estimatedSizeMB;
+
+    return InkWell(
+      onTap: () => _showRegionDetail(
+        name: '${country.emoji} ${country.name} (all)',
+        subtitle:
+            '${country.states.length} regions \u00B7 ~${sizeMB.toStringAsFixed(0)} MB',
+        tiles: countryTiles,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Icon(Icons.public,
+                size: 18, color: theme.colorScheme.onSurfaceVariant),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Entire country',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                value: progress,
-                backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            ),
+            Text(
+              '~${sizeMB.toStringAsFixed(0)} MB',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontFamily: 'monospace',
               ),
-            ],
-          ),
+            ),
+            const SizedBox(width: 4),
+            if (missing.isEmpty)
+              Icon(Icons.check_circle,
+                  size: 16, color: theme.colorScheme.primary)
+            else
+              Icon(Icons.chevron_right,
+                  size: 18, color: theme.colorScheme.onSurfaceVariant),
+          ],
         ),
       ),
     );
   }
 
-  void _showRegionDetail(
-    RegionPreset region,
-    Set<TileIndex> needed,
-    Set<TileIndex> available,
-  ) {
-    final missing = needed.difference(available);
-    final tileManager = ref.read(tileManagerProvider);
+  // -----------------------------------------------------------------------
+  //  Individual state row
+  // -----------------------------------------------------------------------
+
+  Widget _buildStateRow(ThemeData theme, Country country, StateRegion state) {
+    final stateTiles = state.bbox.tiles;
+    final available = stateTiles.intersection(_availableTiles);
+    final progress =
+        stateTiles.isEmpty ? 0.0 : available.length / stateTiles.length;
+    final allDone =
+        available.length == stateTiles.length && stateTiles.isNotEmpty;
+    final sizeMB = state.bbox.estimatedSizeMB;
+
+    return InkWell(
+      onTap: () => _showRegionDetail(
+        name: state.name,
+        subtitle: state.description ?? '',
+        tiles: stateTiles,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            // Indented with a dot
+            const SizedBox(width: 28),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          state.name,
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      ),
+                      Text(
+                        allDone
+                            ? '${stateTiles.length} tiles'
+                            : '${available.length}/${stateTiles.length}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      if (allDone)
+                        Icon(Icons.check_circle,
+                            size: 14, color: theme.colorScheme.primary)
+                      else
+                        Icon(Icons.chevron_right,
+                            size: 16,
+                            color: theme.colorScheme.onSurfaceVariant),
+                    ],
+                  ),
+                  if (state.description != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      '${state.description!} \u00B7 ~${sizeMB.toStringAsFixed(0)} MB',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 11,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  if (!allDone && available.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(2),
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        minHeight: 3,
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  //  Region detail bottom sheet
+  // -----------------------------------------------------------------------
+
+  void _showRegionDetail({
+    required String name,
+    required String subtitle,
+    required Set<TileIndex> tiles,
+  }) {
+    final available = tiles.intersection(_availableTiles);
+    final missing = tiles.difference(available);
 
     showModalBottomSheet(
       context: context,
@@ -293,36 +409,38 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                    color: theme.colorScheme.onSurfaceVariant
+                        .withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
               Text(
-                region.name,
+                name,
                 style: theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                '${region.centerLat.toStringAsFixed(1)}°N, '
-                '${region.centerLon.toStringAsFixed(1)}°E · '
-                '${region.radiusKm.toStringAsFixed(0)} km radius',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontFamily: 'monospace',
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(height: 16),
 
-              // Tile stats
-              _detailRow(theme, 'Total tiles', '${needed.length}'),
+              // Stats
+              _detailRow(theme, 'Total tiles', '${tiles.length}'),
               _detailRow(theme, 'Downloaded', '${available.length}'),
               _detailRow(theme, 'Missing', '${missing.length}'),
+              _detailRow(theme, 'Est. size',
+                  '~${(tiles.length * 25).toStringAsFixed(0)} MB (full res)'),
               const SizedBox(height: 16),
 
-              // Instruction for downloading
+              // Download instructions
               if (missing.isNotEmpty)
                 Card(
                   color: theme.colorScheme.secondaryContainer,
@@ -349,7 +467,13 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                         Wrap(
                           spacing: 4,
                           runSpacing: 4,
-                          children: missing
+                          children: (missing.toList()
+                                ..sort((a, b) {
+                                  final cmp = a.latDeg.compareTo(b.latDeg);
+                                  return cmp != 0
+                                      ? cmp
+                                      : a.lonDeg.compareTo(b.lonDeg);
+                                }))
                               .map((t) => Chip(
                                     label: Text(
                                       t.hgtFilename,
@@ -366,7 +490,7 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                   ),
                 ),
 
-              // Resolution breakdown
+              // Resolution tiers
               const SizedBox(height: 16),
               Text(
                 'Resolution tiers',
@@ -375,18 +499,18 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              _detailRow(theme, '30m (0–10 km)',
-                  '${TileResolution.full.gridSize}×${TileResolution.full.gridSize}'),
-              _detailRow(theme, '90m (10–40 km)',
-                  '${TileResolution.medium.gridSize}×${TileResolution.medium.gridSize}'),
-              _detailRow(theme, '250m (40–100 km)',
-                  '${TileResolution.low.gridSize}×${TileResolution.low.gridSize}'),
+              _detailRow(theme, '30m (0\u201310 km)',
+                  '${TileResolution.full.gridSize}\u00D7${TileResolution.full.gridSize}'),
+              _detailRow(theme, '90m (10\u201340 km)',
+                  '${TileResolution.medium.gridSize}\u00D7${TileResolution.medium.gridSize}'),
+              _detailRow(theme, '250m (40\u2013100 km)',
+                  '${TileResolution.low.gridSize}\u00D7${TileResolution.low.gridSize}'),
 
-              // Delete button for downloaded tiles
+              // Delete
               if (available.isNotEmpty) ...[
                 const SizedBox(height: 24),
                 OutlinedButton.icon(
-                  onPressed: () => _confirmDelete(region, available),
+                  onPressed: () => _confirmDelete(name, available),
                   icon: const Icon(Icons.delete_outline),
                   label: Text(
                       'Delete ${available.length} tile${available.length == 1 ? '' : 's'}'),
@@ -421,14 +545,18 @@ class _RegionDownloadScreenState extends ConsumerState<RegionDownloadScreen> {
     );
   }
 
-  void _confirmDelete(RegionPreset region, Set<TileIndex> tiles) {
+  // -----------------------------------------------------------------------
+  //  Delete confirmation
+  // -----------------------------------------------------------------------
+
+  void _confirmDelete(String regionName, Set<TileIndex> tiles) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete tiles?'),
         content: Text(
           'Delete ${tiles.length} tile${tiles.length == 1 ? '' : 's'} '
-          'for ${region.name}? You can re-download them later.',
+          'for $regionName? You can re-download them later.',
         ),
         actions: [
           TextButton(
