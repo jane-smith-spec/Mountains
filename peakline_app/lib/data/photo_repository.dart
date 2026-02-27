@@ -18,6 +18,7 @@ import 'package:exif/exif.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// Metadata extracted from a photo's EXIF data.
 class PhotoMetadata {
@@ -119,17 +120,37 @@ class PhotoRepository {
   /// Pick a photo from the device gallery and extract its metadata.
   ///
   /// Returns null if the user cancelled the picker.
+  ///
+  /// The image bytes are captured once from the picker, then:
+  ///   1. Saved to permanent app storage (survives picker cache cleanup)
+  ///   2. EXIF is parsed from those same raw bytes
+  ///
+  /// This avoids Android content-URI permission expiry and image_picker
+  /// cache issues that can strip EXIF data on repeated picks.
   Future<ImportedPhoto?> pickFromGallery() async {
     final xFile = await _picker.pickImage(source: ImageSource.gallery);
     if (xFile == null) return null;
 
-    // Read bytes via XFile.readAsBytes() — this properly handles Android
-    // content URIs. Using File(xFile.path).readAsBytes() can fail on
-    // subsequent picks when the cached file or URI permissions expire.
+    // Capture the raw bytes immediately — this is our one reliable read.
     final bytes = await xFile.readAsBytes();
+
+    // Save to our own permanent file so we're independent of the picker.
+    final appDir = await getApplicationDocumentsDirectory();
+    final photosDir = Directory('${appDir.path}/imported_photos');
+    if (!photosDir.existsSync()) {
+      photosDir.createSync(recursive: true);
+    }
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final ext = xFile.name.contains('.') ? xFile.name.split('.').last : 'jpg';
+    final permanentPath = '${photosDir.path}/photo_$timestamp.$ext';
+    await File(permanentPath).writeAsBytes(bytes);
+
+    // Parse EXIF from the raw bytes we just captured.
     final metadata = await extractMetadataFromBytes(bytes);
+    debugPrint('PhotoRepository: imported to $permanentPath — $metadata');
+
     return ImportedPhoto(
-      filePath: xFile.path,
+      filePath: permanentPath,
       metadata: metadata,
     );
   }
