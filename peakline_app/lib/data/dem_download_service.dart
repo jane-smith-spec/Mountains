@@ -16,6 +16,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tile_index.dart';
@@ -239,6 +240,42 @@ class DemDownloadService {
   void cancel() {
     _cancelToken?.cancel('User cancelled');
     _cancelToken = null;
+  }
+
+  /// Ensure the DEM tile for a GPS coordinate is available locally.
+  ///
+  /// If the tile already exists, returns its path immediately.
+  /// If not, downloads it at the given [quality] (default medium/90m)
+  /// and returns the path on success, or null on failure.
+  ///
+  /// This is the on-demand auto-download used by the photo analyzer
+  /// and live camera view — one tile at a time, kept permanently.
+  Future<String?> ensureTileForCoordinate(
+    double latDeg,
+    double lonDeg, {
+    DownloadQuality quality = DownloadQuality.medium,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final tile = TileIndex.fromCoordinate(latDeg, lonDeg);
+
+    // Already have it? Return immediately.
+    if (await demRepository.hasTile(tile)) {
+      return demRepository.tileFilePath(tile);
+    }
+
+    debugPrint('DemDownloadService: auto-downloading ${tile.hgtFilename} '
+        'at ${quality.label}');
+
+    final success = await _downloadSingleTile(
+      tile: tile,
+      quality: quality,
+      onTileProgress: onProgress ?? (_, __) {},
+    );
+
+    if (success) {
+      return demRepository.tileFilePath(tile);
+    }
+    return null;
   }
 
   /// Download a single tile at the given quality.

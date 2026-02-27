@@ -15,11 +15,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../data/dem_download_service.dart';
 import '../../services/camera_service.dart';
 import '../../services/gyro_stabilizer.dart';
+import '../../services/horizon_service.dart';
+import '../../models/sensor_data.dart';
 import '../../services/location_service.dart';
 import '../../services/sensor_service.dart';
 import '../../services/share_service.dart';
+import '../../models/observer_state.dart';
 import '../painters/grid_painter.dart';
 import '../widgets/compass_indicator.dart';
 import '../widgets/elevation_readout.dart';
@@ -45,6 +49,10 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
   bool _showGrid = false;
   bool _useGyroStabilization = true;
   bool _isCapturing = false;
+
+  /// Whether we've triggered the initial horizon computation.
+  bool _horizonTriggered = false;
+  bool _horizonDownloading = false;
 
   /// Key for the RepaintBoundary wrapping the AR content.
   final _captureKey = GlobalKey();
@@ -120,6 +128,44 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
     }
   }
 
+  /// Auto-download the DEM tile for the current GPS location and
+  /// compute the horizon profile so the overlay appears.
+  Future<void> _ensureHorizonForLocation(DeviceLocation loc) async {
+    if (mounted) setState(() => _horizonDownloading = true);
+
+    try {
+      final downloadService = ref.read(demDownloadServiceProvider);
+      final demPath = await downloadService.ensureTileForCoordinate(
+        loc.latitudeDeg,
+        loc.longitudeDeg,
+        quality: DownloadQuality.medium,
+      );
+
+      if (!mounted || demPath == null) {
+        if (mounted) setState(() => _horizonDownloading = false);
+        return;
+      }
+
+      setState(() => _horizonDownloading = false);
+
+      // Compute horizon profile so the overlay has data
+      final horizonService = ref.read(horizonServiceProvider);
+      await horizonService.computeProfile(
+        observer: ObserverState(
+          latitudeDeg: loc.latitudeDeg,
+          longitudeDeg: loc.longitudeDeg,
+          altitudeM: loc.altitudeM,
+          headingDeg: 0, // full 360° profile, heading doesn't matter
+          pitchDeg: 0,
+        ),
+        demPath: demPath,
+      );
+      if (mounted) setState(() {});
+    } catch (_) {
+      if (mounted) setState(() => _horizonDownloading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cameraService = ref.watch(cameraServiceProvider);
@@ -131,6 +177,14 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
         : ref.watch(deviceOrientationProvider);
 
     final location = ref.watch(deviceLocationProvider);
+
+    // Trigger horizon computation when GPS becomes available
+    if (!_horizonTriggered) {
+      location.whenData((loc) {
+        _horizonTriggered = true;
+        _ensureHorizonForLocation(loc);
+      });
+    }
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -166,6 +220,43 @@ class _LiveViewScreenState extends ConsumerState<LiveViewScreen>
             // Layer 3: Horizon topo line overlay (toggleable)
             if (cameraService.isInitialized && visibility.showHorizon)
               const HorizonOverlay(),
+
+            // Tile download indicator
+            if (_horizonDownloading)
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 50,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: Colors.white70,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Downloading elevation data...',
+                          style: TextStyle(
+                              color: Colors.white70, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
 
             // Layer 4: (Future) Peak flags and landmark pins will be
             // added here once the peak database is loaded

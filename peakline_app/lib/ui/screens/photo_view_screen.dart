@@ -20,7 +20,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
 import '../../core/projection.dart';
-import '../../data/dem_repository.dart';
+import '../../data/dem_download_service.dart';
 import '../../data/photo_repository.dart';
 import '../../services/horizon_service.dart';
 import '../../models/observer_state.dart';
@@ -31,14 +31,17 @@ enum _HorizonStatus {
   /// No photo loaded yet.
   idle,
 
+  /// Downloading the DEM tile for this location.
+  downloading,
+
   /// Computing the horizon profile from DEM data.
   computing,
 
   /// Profile computed successfully — overlay is visible.
   ready,
 
-  /// No DEM tiles downloaded for the photo's GPS location.
-  noTiles,
+  /// Download failed (network error, etc.).
+  downloadFailed,
 
   /// Computation failed (C core error or missing data).
   failed,
@@ -252,19 +255,24 @@ class _PhotoViewScreenState extends ConsumerState<PhotoViewScreen> {
     String? actionLabel;
 
     switch (_horizonStatus) {
+      case _HorizonStatus.downloading:
+        icon = Icons.cloud_download;
+        message = 'Downloading elevation data for this location...';
+        bgColor = theme.colorScheme.primaryContainer;
+        fgColor = theme.colorScheme.onPrimaryContainer;
       case _HorizonStatus.computing:
         icon = Icons.hourglass_top;
         message = 'Computing horizon profile...';
         bgColor = theme.colorScheme.primaryContainer;
         fgColor = theme.colorScheme.onPrimaryContainer;
-      case _HorizonStatus.noTiles:
-        icon = Icons.cloud_download;
-        message = 'No elevation data for this location. '
-            'Download tiles from the Regions screen.';
+      case _HorizonStatus.downloadFailed:
+        icon = Icons.cloud_off;
+        message = 'Could not download elevation data. '
+            'Check your connection, or download tiles from Regions.';
         bgColor = theme.colorScheme.errorContainer;
         fgColor = theme.colorScheme.onErrorContainer;
-        actionLabel = 'Go to Regions';
-        action = () => Navigator.pop(context);
+        actionLabel = 'Retry';
+        action = () => _computeHorizon();
       case _HorizonStatus.failed:
         icon = Icons.warning_amber;
         message = 'Failed to compute horizon profile. '
@@ -659,28 +667,35 @@ class _PhotoViewScreenState extends ConsumerState<PhotoViewScreen> {
   }
 
   /// Compute horizon profile using DEM tiles for the photo's GPS location.
+  ///
+  /// If the tile isn't downloaded yet, auto-downloads it at medium quality
+  /// (90m) and keeps it permanently for future use.
   Future<void> _computeHorizon() async {
     final meta = _photo?.metadata;
     if (meta == null || !meta.hasGps) return;
 
-    setState(() => _horizonStatus = _HorizonStatus.computing);
-
     try {
-      // Look up the DEM tile for this GPS coordinate
-      final demRepo = ref.read(demRepositoryProvider);
-      final demPath = await demRepo.tilePathForCoordinate(
+      // Ensure the DEM tile is available — auto-download if missing
+      final downloadService = ref.read(demDownloadServiceProvider);
+
+      setState(() => _horizonStatus = _HorizonStatus.downloading);
+
+      final demPath = await downloadService.ensureTileForCoordinate(
         meta.latitudeDeg!,
         meta.longitudeDeg!,
+        quality: DownloadQuality.medium,
       );
 
+      if (!mounted) return;
+
       if (demPath == null) {
-        if (mounted) {
-          setState(() => _horizonStatus = _HorizonStatus.noTiles);
-        }
+        setState(() => _horizonStatus = _HorizonStatus.downloadFailed);
         return;
       }
 
       // Compute the 360° horizon profile via C native core
+      setState(() => _horizonStatus = _HorizonStatus.computing);
+
       final horizonService = ref.read(horizonServiceProvider);
       final points = await horizonService.computeProfile(
         observer: ObserverState(
