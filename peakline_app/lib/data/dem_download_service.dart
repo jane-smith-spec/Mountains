@@ -586,21 +586,17 @@ class DemDownloadService {
         }
         final compressed =
             tiffBytes.sublist(offset, offset + compressedLen);
+        // Try zlib (with header) first, then raw deflate
         try {
           return Uint8List.fromList(zlib.decode(compressed));
         } catch (_) {
-          // Some DEFLATE streams are raw (no zlib header) — try raw inflate
           try {
-            final inflater = RawZLibFilter.inflate(raw: true);
-            inflater.process(compressed, 0, compressed.length);
-            final out = <int>[];
-            for (;;) {
-              final chunk = inflater.processed();
-              if (chunk == null) break;
-              out.addAll(chunk);
-            }
-            return Uint8List.fromList(out);
+            // Raw deflate (no zlib header) — use ZLibDecoder with raw flag
+            final decoder = ZLibDecoder(raw: true);
+            return Uint8List.fromList(decoder.convert(compressed));
           } catch (_) {
+            debugPrint('GeoTIFF: failed to decompress chunk '
+                '($compressedLen bytes)');
             return Uint8List(0);
           }
         }
