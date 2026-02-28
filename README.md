@@ -105,6 +105,7 @@ cmake --build .
 welcome screen and the C core builds with passing tests.
 
 See `PLAN.md` for the full 20-step implementation plan.
+See `TODO.md` for the current actionable backlog (including active user-reported blockers).
 
 ## Strategy & Codebase Feedback (Current Snapshot)
 
@@ -125,3 +126,17 @@ See `PLAN.md` for the full 20-step implementation plan.
 - What are your initial target regions for DEM preloading (single country, alpine belt, global on-demand)?
 - Is offline-first behavior required for core peak identification, or only for previously downloaded regions?
 - Which accuracy metric will define success for skyline/photo matching (e.g., heading error tolerance in degrees)?
+
+## Flutter Bring-Up Notes (for this sandbox/CI-style environment)
+
+If `flutter` is not on PATH, this repo cannot run `flutter analyze`/`flutter test` yet.
+Use this quick sequence once Flutter is installed:
+
+```bash
+cd /home/runner/work/Mountains/Mountains/peakline_app
+flutter --version
+flutter doctor
+flutter pub get
+flutter analyze
+flutter test
+```
