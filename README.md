@@ -105,3 +105,38 @@ cmake --build .
 welcome screen and the C core builds with passing tests.
 
 See `PLAN.md` for the full 20-step implementation plan.
+See `TODO.md` for the current actionable backlog (including active user-reported blockers).
+
+## Strategy & Codebase Feedback (Current Snapshot)
+
+### What looks strong
+- **Clear architecture split**: Flutter UI + C core via FFI is a good fit for your performance goals.
+- **Incremental delivery approach**: `PLAN.md` is unusually detailed and reduces execution risk.
+- **Good early testing discipline**: native math modules already have focused unit tests.
+
+### Highest-impact suggestions
+1. **Track "planned vs implemented" explicitly in docs**  
+   `PLAN.md` describes an extensive target architecture that is ahead of the code today. Consider keeping a short "Implemented in repo today" checklist in `README.md` so contributors can quickly separate roadmap from reality.
+2. **Define API stability rules early for FFI**  
+   Since `peakline.h` is the contract with Dart, adding a compatibility/versioning policy now (e.g., how breaking changes are communicated) will prevent integration churn later.
+3. **Add Flutter smoke tests as soon as screens grow**  
+   Native tests are in place, but Flutter currently has no test folder in this scaffold. A basic widget smoke test for `PeakLineApp`/`HomeScreen` will guard routing/theme regressions with minimal overhead.
+
+### Questions worth deciding soon
+- What are your initial target regions for DEM preloading (single country, alpine belt, global on-demand)?
+- Is offline-first behavior required for core peak identification, or only for previously downloaded regions?
+- Which accuracy metric will define success for skyline/photo matching (e.g., heading error tolerance in degrees)?
+
+## Flutter Bring-Up Notes (for this sandbox/CI-style environment)
+
+If `flutter` is not on PATH, this repo cannot run `flutter analyze`/`flutter test` yet.
+Use this quick sequence once Flutter is installed:
+
+```bash
+cd peakline_app
+flutter --version
+flutter doctor
+flutter pub get
+flutter analyze
+flutter test
+```
