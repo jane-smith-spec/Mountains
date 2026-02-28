@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'photo_debug_screen.dart';
 
 /// The initial home screen of PeakLine.
 ///
@@ -76,6 +77,18 @@ class HomeScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PhotoDebugScreen(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.photo),
+                label: const Text('Open Photo Debug'),
               ),
             ],
           ),
