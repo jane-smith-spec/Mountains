@@ -78,9 +78,9 @@ class _PhotoDebugScreenState extends State<PhotoDebugScreen> {
                       File(_photoMetadata!.path),
                       fit: BoxFit.cover,
                     ),
-                    const IgnorePointer(
+                    IgnorePointer(
                       child: CustomPaint(
-                        painter: TopoSilhouettePainter(),
+                        painter: TopoSilhouettePainter(color: theme.colorScheme.primary),
                       ),
                     ),
                   ],
@@ -112,7 +112,9 @@ class _PhotoDebugScreenState extends State<PhotoDebugScreen> {
                         color: theme.colorScheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: const CustomPaint(painter: TopoSilhouettePainter()),
+                      child: CustomPaint(
+                        painter: TopoSilhouettePainter(color: theme.colorScheme.primary),
+                      ),
                     ),
                   ),
                 ],
@@ -124,4 +126,3 @@ class _PhotoDebugScreenState extends State<PhotoDebugScreen> {
     );
   }
 }
-

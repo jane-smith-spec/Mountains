@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:exif/exif.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:meta/meta.dart';
 
 import 'photo_metadata.dart';
 
@@ -14,6 +15,7 @@ class PhotoRepository {
 
   final ImagePicker _imagePicker;
   final Map<String, PhotoMetadata> _metadataCache = <String, PhotoMetadata>{};
+  static final RegExp _coordinateNumberPattern = RegExp(r'-?\d+(?:\.\d+)?');
 
   Future<PhotoMetadata?> pickAndReadMetadata() async {
     final XFile? image = await _imagePicker.pickImage(source: ImageSource.gallery);
@@ -32,11 +34,11 @@ class PhotoRepository {
     final List<int> imageBytes = await File(imagePath).readAsBytes();
     final Map<String, IfdTag> tags = await readExifFromBytes(imageBytes);
 
-    final double? latitude = _parseCoordinate(
+    final double? latitude = parseCoordinate(
       rawCoordinate: tags['GPS GPSLatitude']?.printable,
       directionRef: tags['GPS GPSLatitudeRef']?.printable,
     );
-    final double? longitude = _parseCoordinate(
+    final double? longitude = parseCoordinate(
       rawCoordinate: tags['GPS GPSLongitude']?.printable,
       directionRef: tags['GPS GPSLongitudeRef']?.printable,
     );
@@ -50,13 +52,8 @@ class PhotoRepository {
     return metadata;
   }
 
-  static double? parseCoordinateForTest({
-    required String? rawCoordinate,
-    required String? directionRef,
-  }) =>
-      _parseCoordinate(rawCoordinate: rawCoordinate, directionRef: directionRef);
-
-  static double? _parseCoordinate({
+  @visibleForTesting
+  static double? parseCoordinate({
     required String? rawCoordinate,
     required String? directionRef,
   }) {
@@ -80,7 +77,7 @@ class PhotoRepository {
     final double unsigned = degrees + (minutes / 60.0) + (seconds / 3600.0);
     final String normalizedRef = directionRef?.trim().toUpperCase() ?? '';
     if (normalizedRef == 'S' || normalizedRef == 'W') {
-      return -unsigned.abs();
+      return -unsigned;
     }
     return unsigned;
   }
@@ -99,11 +96,10 @@ class PhotoRepository {
       }
     }
 
-    final RegExpMatch? match = RegExp(r'-?\d+(?:\.\d+)?').firstMatch(rawValue);
+    final RegExpMatch? match = _coordinateNumberPattern.firstMatch(rawValue);
     if (match == null) {
       return null;
     }
     return double.tryParse(match.group(0)!);
   }
 }
-

@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 
 class TopoSilhouettePainter extends CustomPainter {
+  const TopoSilhouettePainter({required this.color});
+
+  final Color color;
+
   @override
   void paint(Canvas canvas, Size size) {
     final Paint linePaint = Paint()
-      ..color = Colors.lightGreenAccent
+      ..color = color
       ..strokeWidth = 2.5
       ..style = PaintingStyle.stroke;
 
@@ -30,6 +34,6 @@ class TopoSilhouettePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant TopoSilhouettePainter oldDelegate) => false;
+  bool shouldRepaint(covariant TopoSilhouettePainter oldDelegate) =>
+      oldDelegate.color != color;
 }
-

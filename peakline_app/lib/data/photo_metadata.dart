@@ -11,4 +11,3 @@ class PhotoMetadata {
 
   bool get hasGps => latitude != null && longitude != null;
 }
-
