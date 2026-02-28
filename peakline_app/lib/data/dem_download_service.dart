@@ -472,6 +472,7 @@ class DemDownloadService {
       final tileOffsets = <int>[];
       final tileByteCounts = <int>[];
       int compression = 1;
+      int predictor = 1; // 1=none, 2=horizontal differencing, 3=float predictor
       int sampleFormat = 3; // default Float
       int bitsPerSample = 32;
 
@@ -544,6 +545,9 @@ class DemDownloadService {
             tileOffsets.addAll(readArray(count, dataOffset, typeSize));
           case 325:
             tileByteCounts.addAll(readArray(count, dataOffset, typeSize));
+          case 317: // Predictor (1=none, 2=horiz diff, 3=float predictor)
+            predictor =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
           case 339: // SampleFormat (1=uint, 2=int, 3=float)
             sampleFormat =
                 typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
@@ -551,7 +555,8 @@ class DemDownloadService {
       }
 
       debugPrint('GeoTIFF: ${width}x$height, compression=$compression, '
-          'bps=$bitsPerSample, sampleFormat=$sampleFormat, '
+          'predictor=$predictor, bps=$bitsPerSample, '
+          'sampleFormat=$sampleFormat, '
           'tiles=${tileOffsets.length} (${tileWidth}x$tileHeight), '
           'strips=${stripOffsets.length}');
 
@@ -602,6 +607,67 @@ class DemDownloadService {
         }
       }
 
+      /// Undo TIFF floating-point predictor (Predictor=3) on a tile/strip.
+      ///
+      /// Copernicus COG tiles use this. The encoding reorders bytes into
+      /// byte planes per row, then applies horizontal differencing.
+      /// We must undo this to get back the actual Float32 values.
+      Uint8List undoFloatPredictor(Uint8List data, int rowWidth) {
+        final bps = bytesPerSample;
+        final rowBytes = rowWidth * bps;
+        if (data.length < rowBytes) return data;
+
+        final result = Uint8List.fromList(data);
+        final numRows = data.length ~/ rowBytes;
+
+        for (int r = 0; r < numRows; r++) {
+          final rowStart = r * rowBytes;
+          if (rowStart + rowBytes > result.length) break;
+
+          // Step 1: Undo horizontal byte differencing
+          // (each byte = cumulative sum of differences)
+          for (int i = rowStart + 1; i < rowStart + rowBytes; i++) {
+            result[i] = (result[i] + result[i - 1]) & 0xFF;
+          }
+
+          // Step 2: Un-rearrange bytes from byte-plane to interleaved
+          // Input layout:  [all byte0s for row, all byte1s, byte2s, byte3s]
+          // Output layout: [sample0_b0,b1,b2,b3, sample1_b0,b1,b2,b3, ...]
+          final row = Uint8List(rowBytes);
+          for (int sample = 0; sample < rowWidth; sample++) {
+            for (int b = 0; b < bps; b++) {
+              row[sample * bps + b] = result[rowStart + b * rowWidth + sample];
+            }
+          }
+          result.setRange(rowStart, rowStart + rowBytes, row);
+        }
+
+        return result;
+      }
+
+      /// Undo TIFF horizontal differencing predictor (Predictor=2)
+      /// for integer data.
+      Uint8List undoIntPredictor(Uint8List data, int rowWidth) {
+        final bps = bytesPerSample;
+        final rowBytes = rowWidth * bps;
+        if (data.length < rowBytes) return data;
+
+        final result = Uint8List.fromList(data);
+        final numRows = data.length ~/ rowBytes;
+
+        for (int r = 0; r < numRows; r++) {
+          final rowStart = r * rowBytes;
+          if (rowStart + rowBytes > result.length) break;
+
+          // Undo horizontal differencing per sample
+          for (int i = rowStart + bps; i < rowStart + rowBytes; i++) {
+            result[i] = (result[i] + result[i - bps]) & 0xFF;
+          }
+        }
+
+        return result;
+      }
+
       /// Read a Float32 from decompressed bytes.
       double readFloat(Uint8List data, int off) {
         if (off + 4 > data.length) return 0;
@@ -638,7 +704,14 @@ class DemDownloadService {
               continue;
             }
 
-            final decompressed = decompressChunk(offset, byteCount);
+            var decompressed = decompressChunk(offset, byteCount);
+
+            // Apply predictor decoding after decompression
+            if (predictor == 3 && isFloat) {
+              decompressed = undoFloatPredictor(decompressed, tileWidth);
+            } else if (predictor == 2) {
+              decompressed = undoIntPredictor(decompressed, tileWidth);
+            }
 
             for (int row = 0; row < tileHeight; row++) {
               final imgRow = ty * tileHeight + row;
@@ -664,7 +737,15 @@ class DemDownloadService {
               : (width * height * bytesPerSample - pixelIdx * bytesPerSample);
           if (offset + byteCount > tiffBytes.length) break;
 
-          final decompressed = decompressChunk(offset, byteCount);
+          var decompressed = decompressChunk(offset, byteCount);
+
+          // Apply predictor decoding after decompression
+          if (predictor == 3 && isFloat) {
+            decompressed = undoFloatPredictor(decompressed, width);
+          } else if (predictor == 2) {
+            decompressed = undoIntPredictor(decompressed, width);
+          }
+
           final pixelCount = decompressed.length ~/ bytesPerSample;
 
           for (int p = 0;
@@ -685,10 +766,49 @@ class DemDownloadService {
       debugPrint('GeoTIFF: read ${elevations.length} elevation values '
           '(range: ${_rangeStr(elevations)})');
 
+      // If the GeoTIFF dimensions don't match the expected grid,
+      // resample to produce a valid .hgt file the C core can load.
+      final targetGrid = expectedGrid;
+      Float32List finalElevations;
+      if (width == targetGrid && height == targetGrid) {
+        finalElevations = elevations;
+      } else {
+        debugPrint('GeoTIFF: resampling from ${width}x$height '
+            'to ${targetGrid}x$targetGrid');
+        finalElevations = Float32List(targetGrid * targetGrid);
+        for (int row = 0; row < targetGrid; row++) {
+          final srcRow = height > 1
+              ? (row * (height - 1)) / (targetGrid - 1)
+              : 0.0;
+          for (int col = 0; col < targetGrid; col++) {
+            final srcCol = width > 1
+                ? (col * (width - 1)) / (targetGrid - 1)
+                : 0.0;
+            // Bilinear interpolation
+            final r0 = srcRow.floor().clamp(0, height - 1);
+            final r1 = (r0 + 1).clamp(0, height - 1);
+            final c0 = srcCol.floor().clamp(0, width - 1);
+            final c1 = (c0 + 1).clamp(0, width - 1);
+            final fr = srcRow - r0;
+            final fc = srcCol - c0;
+            final v00 = elevations[r0 * width + c0];
+            final v01 = elevations[r0 * width + c1];
+            final v10 = elevations[r1 * width + c0];
+            final v11 = elevations[r1 * width + c1];
+            finalElevations[row * targetGrid + col] =
+                v00 * (1 - fr) * (1 - fc) +
+                v01 * (1 - fr) * fc +
+                v10 * fr * (1 - fc) +
+                v11 * fr * fc;
+          }
+        }
+      }
+
       // Convert to Int16 big-endian .hgt format
-      final hgt = ByteData(width * height * 2);
-      for (int i = 0; i < elevations.length; i++) {
-        final val = elevations[i];
+      final pixelCount = targetGrid * targetGrid;
+      final hgt = ByteData(pixelCount * 2);
+      for (int i = 0; i < pixelCount; i++) {
+        final val = finalElevations[i];
         if (val.isNaN || val < -500) {
           hgt.setInt16(i * 2, -32768, Endian.big);
         } else {
@@ -731,3 +851,29 @@ final demDownloadServiceProvider = Provider<DemDownloadService>((ref) {
   final demRepo = ref.watch(demRepositoryProvider);
   return DemDownloadService(demRepository: demRepo);
 });
+
+// -----------------------------------------------------------------------
+//  Test helper — exposes private methods for unit testing
+// -----------------------------------------------------------------------
+
+/// Test-only helper to exercise the GeoTIFF → .hgt conversion pipeline
+/// without needing network access or a real DemRepository.
+class DemDownloadServiceTestHelper {
+  /// Convert a GeoTIFF byte buffer to raw .hgt format.
+  ///
+  /// Delegates to [DemDownloadService._geotiffToHgt].
+  static Uint8List? geotiffToHgt(Uint8List tiffBytes, int expectedGrid) {
+    return DemDownloadService._geotiffToHgt(tiffBytes, expectedGrid);
+  }
+
+  /// Downsample an .hgt buffer from one grid size to another.
+  ///
+  /// Delegates to [DemDownloadService._downsampleHgt].
+  static Uint8List downsampleHgt(
+    Uint8List source,
+    int sourceSize,
+    int targetSize,
+  ) {
+    return DemDownloadService._downsampleHgt(source, sourceSize, targetSize);
+  }
+}

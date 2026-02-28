@@ -14,9 +14,12 @@ library;
 
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/constants.dart';
 import '../../core/projection.dart';
@@ -80,6 +83,12 @@ class _PhotoViewScreenState extends ConsumerState<PhotoViewScreen> {
       appBar: AppBar(
         title: const Text('Photo Analysis'),
         actions: [
+          // Debug: test the overlay pipeline with synthetic data
+          IconButton(
+            icon: const Icon(Icons.science),
+            onPressed: _testOverlayPipeline,
+            tooltip: 'Test overlay (debug)',
+          ),
           if (_photo != null)
             IconButton(
               icon: const Icon(Icons.info_outline),
@@ -720,6 +729,143 @@ class _PhotoViewScreenState extends ConsumerState<PhotoViewScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _horizonStatus = _HorizonStatus.failed);
+      }
+    }
+  }
+
+  /// Debug: Test the full overlay pipeline with synthetic terrain data.
+  ///
+  /// Creates a known .hgt file with a simple mountain (bypasses GeoTIFF
+  /// conversion entirely) and feeds it to the C core. This isolates
+  /// whether the problem is in GeoTIFF conversion vs C core/projection.
+  Future<void> _testOverlayPipeline() async {
+    setState(() {
+      _horizonStatus = _HorizonStatus.computing;
+      _error = null;
+    });
+
+    try {
+      // Create a synthetic 401×401 .hgt tile (250m resolution)
+      // Centered at N46 E007 (Swiss Alps area)
+      const grid = 401;
+      const lat = 46;
+      const lon = 7;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final demDir = Directory('${appDir.path}/dem_tiles');
+      if (!await demDir.exists()) {
+        await demDir.create(recursive: true);
+      }
+      final hgtPath = '${demDir.path}/N${lat}E${lon.toString().padLeft(3, '0')}.hgt';
+
+      debugPrint('TestOverlay: creating synthetic .hgt at $hgtPath');
+
+      // Build terrain: a cone mountain that peaks at center (200,200)
+      // with elevation from 500m (edges) to 4000m (summit)
+      final data = ByteData(grid * grid * 2);
+      for (int row = 0; row < grid; row++) {
+        for (int col = 0; col < grid; col++) {
+          final dy = (row - 200).abs();
+          final dx = (col - 200).abs();
+          final dist = math.sqrt((dx * dx + dy * dy).toDouble());
+          final maxDist = 200.0;
+          final elevation = dist < maxDist
+              ? (500 + (3500 * (1.0 - dist / maxDist))).toInt()
+              : 500;
+          data.setInt16((row * grid + col) * 2, elevation, Endian.big);
+        }
+      }
+
+      await File(hgtPath).writeAsBytes(data.buffer.asUint8List());
+
+      final fileSize = await File(hgtPath).length();
+      debugPrint('TestOverlay: wrote $fileSize bytes '
+          '(expected ${grid * grid * 2})');
+
+      // Observer at the SW corner of the tile, looking NE toward the mountain
+      const obsLat = 46.1;
+      const obsLon = 7.1;
+      const obsAlt = 800.0;
+      const heading = 45.0; // NE toward mountain
+
+      setState(() {
+        _headingDeg = heading;
+        _headingFromExif = false;
+        _showCompass = false;
+      });
+
+      // Compute horizon profile via C native core
+      final horizonService = ref.read(horizonServiceProvider);
+      final points = await horizonService.computeProfile(
+        observer: const ObserverState(
+          latitudeDeg: obsLat,
+          longitudeDeg: obsLon,
+          altitudeM: obsAlt,
+          headingDeg: heading,
+          pitchDeg: 0,
+        ),
+        demPath: hgtPath,
+      );
+
+      debugPrint('TestOverlay: got ${points.length} horizon points');
+      if (points.isNotEmpty) {
+        // Log a few sample points
+        for (int i = 0; i < points.length && i < 5; i++) {
+          debugPrint('  point[$i]: az=${points[i].azimuthDeg.toStringAsFixed(1)}° '
+              'el=${points[i].elevationAngleDeg.toStringAsFixed(2)}° '
+              'dist=${(points[i].distanceM / 1000).toStringAsFixed(1)}km');
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _profilePointCount = points.length;
+          if (points.isNotEmpty) {
+            _horizonStatus = _HorizonStatus.ready;
+            _error = null;
+          } else {
+            _horizonStatus = _HorizonStatus.failed;
+            _error = 'C core returned 0 points. '
+                'Native library may not be loaded.';
+          }
+        });
+
+        // Show result dialog
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text(points.isNotEmpty
+                  ? 'Test Overlay: SUCCESS'
+                  : 'Test Overlay: No Points'),
+              content: Text(
+                points.isNotEmpty
+                    ? '${points.length} horizon points computed.\n'
+                        'The overlay pipeline works!\n\n'
+                        'If you don\'t see a line on real photos, the '
+                        'issue is likely in the GeoTIFF download/conversion.'
+                    : 'The C core returned 0 points.\n'
+                        'The native library may not be loaded.\n'
+                        'This is expected in debug mode without the C '
+                        'library compiled.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('TestOverlay: error: $e');
+      if (mounted) {
+        setState(() {
+          _horizonStatus = _HorizonStatus.failed;
+          _error = 'Test overlay error: $e';
+        });
       }
     }
   }
