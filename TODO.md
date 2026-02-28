@@ -1,4 +1,4 @@
-# TODO (Owner: Copilot Agent "Summit")
+# TODO (Owner: AI Agent "Summit" — temporary)
 
 - [ ] **Environment enablement**: Get Flutter available in this execution environment (`flutter --version` currently not found), then run:
   - `flutter doctor`
@@ -14,4 +14,3 @@
 
 - [ ] **Roadmap alignment**  
   Keep `PLAN.md` (target architecture) and implemented state synced via short status updates in `README.md`.
-

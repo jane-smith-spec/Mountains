@@ -133,7 +133,7 @@ If `flutter` is not on PATH, this repo cannot run `flutter analyze`/`flutter tes
 Use this quick sequence once Flutter is installed:
 
 ```bash
-cd /home/runner/work/Mountains/Mountains/peakline_app
+cd peakline_app
 flutter --version
 flutter doctor
 flutter pub get
