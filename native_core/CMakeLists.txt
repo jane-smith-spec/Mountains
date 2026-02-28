@@ -14,6 +14,7 @@ add_library(peakline_core SHARED
     src/curvature.c
     src/interpolation.c
     src/dem_io.c
+    src/raycaster.c
 )
 target_include_directories(peakline_core PUBLIC include)
 target_link_libraries(peakline_core m)  # Link math library (for atan2, sqrt, etc.)
@@ -24,6 +25,7 @@ add_library(peakline_core_static STATIC
     src/curvature.c
     src/interpolation.c
     src/dem_io.c
+    src/raycaster.c
 )
 target_include_directories(peakline_core_static PUBLIC include)
 target_link_libraries(peakline_core_static m)
@@ -33,6 +35,8 @@ add_executable(run_tests
     test/test_main.c
     test/test_curvature.c
     test/test_interpolation.c
+    test/test_dem_io.c
+    test/test_raycaster.c
 )
 target_link_libraries(run_tests peakline_core_static m)
 target_include_directories(run_tests PRIVATE include)
