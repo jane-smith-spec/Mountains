@@ -258,9 +258,23 @@ class DemDownloadService {
   }) async {
     final tile = TileIndex.fromCoordinate(latDeg, lonDeg);
 
-    // Already have it? Return immediately.
+    // Already have it? Validate the file size is correct.
     if (await demRepository.hasTile(tile)) {
-      return demRepository.tileFilePath(tile);
+      final path = await demRepository.tileFilePath(tile);
+      final fileSize = await File(path).length();
+      // Valid .hgt sizes: 3601², 1201², or 401² × 2 bytes
+      const validSizes = {
+        3601 * 3601 * 2, // 30m
+        1201 * 1201 * 2, // 90m
+        401 * 401 * 2, // 250m
+      };
+      if (validSizes.contains(fileSize)) {
+        return path;
+      }
+      // Bad file (e.g. raw GeoTIFF from old fallback) — delete and re-download
+      debugPrint('DemDownloadService: ${tile.hgtFilename} has bad size '
+          '($fileSize bytes) — deleting and re-downloading');
+      await demRepository.deleteTile(tile);
     }
 
     debugPrint('DemDownloadService: auto-downloading ${tile.hgtFilename} '
@@ -294,6 +308,7 @@ class DemDownloadService {
     final tmpPath = '$outPath.tmp';
 
     try {
+      debugPrint('DemDownload: fetching $url');
       await _dio.download(
         url,
         tmpPath,
@@ -304,12 +319,16 @@ class DemDownloadService {
       // Convert GeoTIFF → raw .hgt
       final tiffFile = File(tmpPath);
       final tiffBytes = await tiffFile.readAsBytes();
+      debugPrint('DemDownload: downloaded ${tiffBytes.length} bytes');
 
       // Source grid: 1201 for 90m downloads, 3601 for 30m
       final sourceGrid = quality == DownloadQuality.high ? 3601 : 1201;
       final hgtBytes = _geotiffToHgt(tiffBytes, sourceGrid);
 
       if (hgtBytes != null) {
+        debugPrint('DemDownload: converted to .hgt '
+            '(${hgtBytes.length} bytes, expected ${sourceGrid * sourceGrid * 2})');
+
         // If low quality, downsample from 1201 → 401
         if (quality == DownloadQuality.low) {
           final downsampled = _downsampleHgt(hgtBytes, 1201, 401);
@@ -318,8 +337,13 @@ class DemDownloadService {
           await File(outPath).writeAsBytes(hgtBytes);
         }
       } else {
-        // Fallback: keep the raw download
-        await tiffFile.rename(outPath);
+        debugPrint('DemDownload: GeoTIFF conversion failed — '
+            'tile will not be usable');
+        // Don't fall back to renaming raw GeoTIFF as .hgt.
+        // The C core would reject it due to wrong file size.
+        final tmp = File(tmpPath);
+        if (await tmp.exists()) await tmp.delete();
+        return false;
       }
 
       // Clean up temp file
@@ -331,14 +355,18 @@ class DemDownloadService {
       if (e.type == DioExceptionType.cancel) return false;
 
       if (e.response?.statusCode == 404) {
+        debugPrint('DemDownload: 404 for ${tile.hgtFilename} — '
+            'writing flat (ocean) tile');
         await _writeFlatTile(outPath, quality.gridSize);
         return true;
       }
 
+      debugPrint('DemDownload: network error for ${tile.hgtFilename}: $e');
       final tmp = File(tmpPath);
       if (await tmp.exists()) await tmp.delete();
       return false;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('DemDownload: unexpected error for ${tile.hgtFilename}: $e');
       final tmp = File(tmpPath);
       if (await tmp.exists()) await tmp.delete();
       return false;
@@ -406,20 +434,32 @@ class DemDownloadService {
 
   /// Extract elevation data from a GeoTIFF into raw .hgt format.
   ///
+  /// Handles both uncompressed and DEFLATE-compressed GeoTIFFs
+  /// (Copernicus COG tiles use DEFLATE compression).
+  ///
   /// [expectedGrid] is the expected dimension (1201 for 90m, 3601 for 30m).
   /// Returns null if we can't parse the TIFF.
   static Uint8List? _geotiffToHgt(Uint8List tiffBytes, int expectedGrid) {
     try {
-      if (tiffBytes.length < 8) return null;
+      if (tiffBytes.length < 8) {
+        debugPrint('GeoTIFF: file too small (${tiffBytes.length} bytes)');
+        return null;
+      }
 
       final byteData = ByteData.sublistView(tiffBytes);
       final isLittle = tiffBytes[0] == 0x49; // 'II' = little-endian
-      if (!isLittle && tiffBytes[0] != 0x4D) return null;
+      if (!isLittle && tiffBytes[0] != 0x4D) {
+        debugPrint('GeoTIFF: not a TIFF (bad magic bytes)');
+        return null;
+      }
 
       final magic = isLittle
           ? byteData.getUint16(2, Endian.little)
           : byteData.getUint16(2, Endian.big);
-      if (magic != 42) return null;
+      if (magic != 42) {
+        debugPrint('GeoTIFF: not a TIFF (magic=$magic, expected 42)');
+        return null;
+      }
 
       var ifdOffset = isLittle
           ? byteData.getUint32(4, Endian.little)
@@ -432,6 +472,8 @@ class DemDownloadService {
       final tileOffsets = <int>[];
       final tileByteCounts = <int>[];
       int compression = 1;
+      int sampleFormat = 3; // default Float
+      int bitsPerSample = 32;
 
       int readU16(int off) => isLittle
           ? byteData.getUint16(off, Endian.little)
@@ -482,6 +524,9 @@ class DemDownloadService {
             height = totalBytes <= 4
                 ? (typeSize == 2 ? readU16(valueOff) : readU32(valueOff))
                 : readU32(dataOffset);
+          case 258: // BitsPerSample
+            bitsPerSample =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
           case 259:
             compression =
                 typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
@@ -499,25 +544,105 @@ class DemDownloadService {
             tileOffsets.addAll(readArray(count, dataOffset, typeSize));
           case 325:
             tileByteCounts.addAll(readArray(count, dataOffset, typeSize));
+          case 339: // SampleFormat (1=uint, 2=int, 3=float)
+            sampleFormat =
+                typeSize == 2 ? readU16(valueOff) : readU32(valueOff);
         }
       }
 
-      if (width == 0 || height == 0) return null;
-      if (compression != 1) return null; // Can't decode compressed TIFFs
+      debugPrint('GeoTIFF: ${width}x$height, compression=$compression, '
+          'bps=$bitsPerSample, sampleFormat=$sampleFormat, '
+          'tiles=${tileOffsets.length} (${tileWidth}x$tileHeight), '
+          'strips=${stripOffsets.length}');
 
-      // Read float data
-      Float32List? floats;
+      if (width == 0 || height == 0) {
+        debugPrint('GeoTIFF: invalid dimensions');
+        return null;
+      }
+
+      // Supported compressions: 1=none, 8=DEFLATE, 32946=DEFLATE (alt)
+      final isDeflate = compression == 8 || compression == 32946;
+      if (compression != 1 && !isDeflate) {
+        debugPrint('GeoTIFF: unsupported compression=$compression '
+            '(only none/DEFLATE supported)');
+        return null;
+      }
+
+      final bytesPerSample = bitsPerSample ~/ 8;
+      final isFloat = sampleFormat == 3 && bitsPerSample == 32;
+      final isInt16 = sampleFormat == 2 && bitsPerSample == 16;
+
+      if (!isFloat && !isInt16) {
+        debugPrint('GeoTIFF: unsupported format '
+            '(sampleFormat=$sampleFormat, bps=$bitsPerSample)');
+        return null;
+      }
+
+      /// Decompress a chunk of bytes if DEFLATE, otherwise return as-is.
+      Uint8List decompressChunk(int offset, int compressedLen) {
+        if (!isDeflate) {
+          return Uint8List.sublistView(
+              tiffBytes, offset, offset + compressedLen);
+        }
+        final compressed =
+            tiffBytes.sublist(offset, offset + compressedLen);
+        try {
+          return Uint8List.fromList(zlib.decode(compressed));
+        } catch (_) {
+          // Some DEFLATE streams are raw (no zlib header) — try raw inflate
+          try {
+            final inflater = RawZLibFilter.inflate(raw: true);
+            inflater.process(compressed, 0, compressed.length);
+            final out = <int>[];
+            for (;;) {
+              final chunk = inflater.processed();
+              if (chunk == null) break;
+              out.addAll(chunk);
+            }
+            return Uint8List.fromList(out);
+          } catch (_) {
+            return Uint8List(0);
+          }
+        }
+      }
+
+      /// Read a Float32 from decompressed bytes.
+      double readFloat(Uint8List data, int off) {
+        if (off + 4 > data.length) return 0;
+        final bd = ByteData.sublistView(data);
+        return isLittle
+            ? bd.getFloat32(off, Endian.little)
+            : bd.getFloat32(off, Endian.big);
+      }
+
+      /// Read an Int16 from decompressed bytes.
+      int readI16(Uint8List data, int off) {
+        if (off + 2 > data.length) return -32768;
+        final bd = ByteData.sublistView(data);
+        return isLittle
+            ? bd.getInt16(off, Endian.little)
+            : bd.getInt16(off, Endian.big);
+      }
+
+      // Read elevation data into a flat array
+      final elevations = Float32List(width * height);
 
       if (tileOffsets.isNotEmpty && tileWidth > 0) {
         final tilesAcross = (width + tileWidth - 1) ~/ tileWidth;
         final tilesDown = (height + tileHeight - 1) ~/ tileHeight;
-        floats = Float32List(width * height);
 
         for (int ty = 0; ty < tilesDown; ty++) {
           for (int tx = 0; tx < tilesAcross; tx++) {
             final idx = ty * tilesAcross + tx;
             if (idx >= tileOffsets.length) continue;
             final offset = tileOffsets[idx];
+            final byteCount =
+                idx < tileByteCounts.length ? tileByteCounts[idx] : 0;
+            if (byteCount == 0 || offset + byteCount > tiffBytes.length) {
+              continue;
+            }
+
+            final decompressed = decompressChunk(offset, byteCount);
 
             for (int row = 0; row < tileHeight; row++) {
               final imgRow = ty * tileHeight + row;
@@ -525,45 +650,49 @@ class DemDownloadService {
               for (int col = 0; col < tileWidth; col++) {
                 final imgCol = tx * tileWidth + col;
                 if (imgCol >= width) break;
-                final srcOff = offset + (row * tileWidth + col) * 4;
-                if (srcOff + 4 > tiffBytes.length) continue;
-                final val = isLittle
-                    ? byteData.getFloat32(srcOff, Endian.little)
-                    : byteData.getFloat32(srcOff, Endian.big);
-                floats[imgRow * width + imgCol] = val;
+                final srcOff = (row * tileWidth + col) * bytesPerSample;
+                final val = isFloat
+                    ? readFloat(decompressed, srcOff)
+                    : readI16(decompressed, srcOff).toDouble();
+                elevations[imgRow * width + imgCol] = val;
               }
             }
           }
         }
       } else if (stripOffsets.isNotEmpty) {
-        floats = Float32List(width * height);
         int pixelIdx = 0;
         for (int s = 0; s < stripOffsets.length; s++) {
           final offset = stripOffsets[s];
           final byteCount = s < stripByteCounts.length
               ? stripByteCounts[s]
-              : (width * height * 4 - pixelIdx * 4);
-          final pixelCount = byteCount ~/ 4;
+              : (width * height * bytesPerSample - pixelIdx * bytesPerSample);
+          if (offset + byteCount > tiffBytes.length) break;
+
+          final decompressed = decompressChunk(offset, byteCount);
+          final pixelCount = decompressed.length ~/ bytesPerSample;
 
           for (int p = 0;
               p < pixelCount && pixelIdx < width * height;
               p++) {
-            final srcOff = offset + p * 4;
-            if (srcOff + 4 > tiffBytes.length) break;
-            final val = isLittle
-                ? byteData.getFloat32(srcOff, Endian.little)
-                : byteData.getFloat32(srcOff, Endian.big);
-            floats[pixelIdx++] = val;
+            final srcOff = p * bytesPerSample;
+            final val = isFloat
+                ? readFloat(decompressed, srcOff)
+                : readI16(decompressed, srcOff).toDouble();
+            elevations[pixelIdx++] = val;
           }
         }
       } else {
+        debugPrint('GeoTIFF: no tiles or strips found');
         return null;
       }
 
-      // Convert Float32 → Int16 big-endian
+      debugPrint('GeoTIFF: read ${elevations.length} elevation values '
+          '(range: ${_rangeStr(elevations)})');
+
+      // Convert to Int16 big-endian .hgt format
       final hgt = ByteData(width * height * 2);
-      for (int i = 0; i < floats.length; i++) {
-        var val = floats[i];
+      for (int i = 0; i < elevations.length; i++) {
+        final val = elevations[i];
         if (val.isNaN || val < -500) {
           hgt.setInt16(i * 2, -32768, Endian.big);
         } else {
@@ -573,9 +702,22 @@ class DemDownloadService {
       }
 
       return hgt.buffer.asUint8List();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('GeoTIFF: conversion error: $e');
       return null;
     }
+  }
+
+  /// Helper for debug logging: find min/max of elevation data.
+  static String _rangeStr(Float32List data) {
+    if (data.isEmpty) return 'empty';
+    double min = double.infinity, max = double.negativeInfinity;
+    for (final v in data) {
+      if (v.isNaN) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    return '${min.toStringAsFixed(0)}m .. ${max.toStringAsFixed(0)}m';
   }
 
   /// Write a flat (sea-level) .hgt tile for ocean areas.

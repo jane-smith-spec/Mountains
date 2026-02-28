@@ -13,6 +13,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
@@ -106,14 +107,28 @@ class HorizonService {
     required ObserverState observer,
     String? demPath,
   }) async {
-    if (_bridge == null || demPath == null) return [];
+    if (_bridge == null) {
+      debugPrint('HorizonService: native bridge is null — '
+          'C library not loaded');
+      return [];
+    }
+    if (demPath == null) {
+      debugPrint('HorizonService: demPath is null — no tile available');
+      return [];
+    }
 
     // Check if we should skip (observer hasn't moved enough)
     if (_shouldSkipRecompute(observer)) {
+      debugPrint('HorizonService: skipping recompute — '
+          'observer hasn\'t moved enough '
+          '(cached ${_cachedProfile?.points.length ?? 0} points)');
       return _cachedProfile?.points ?? [];
     }
 
     try {
+      debugPrint('HorizonService: computing profile for $observer '
+          'with DEM $demPath');
+
       // Dispose previous profile to free C memory
       _cachedProfile?.dispose();
 
@@ -133,11 +148,16 @@ class HorizonService {
       _lastComputeTime = DateTime.now();
 
       if (_cachedProfile!.isSuccess) {
+        debugPrint('HorizonService: computed ${_cachedProfile!.points.length} '
+            'horizon points');
         return _cachedProfile!.points;
       } else {
+        debugPrint('HorizonService: C core returned status '
+            '${_cachedProfile!.status} (0=ok, negative=error)');
         return [];
       }
     } catch (e) {
+      debugPrint('HorizonService: exception during compute: $e');
       return [];
     }
   }

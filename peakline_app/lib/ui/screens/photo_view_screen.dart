@@ -189,8 +189,9 @@ class _PhotoViewScreenState extends ConsumerState<PhotoViewScreen> {
                   fit: BoxFit.contain,
                 ),
 
-                // Horizon overlay
-                if (meta.hasGps && _horizonStatus == _HorizonStatus.ready)
+                // Horizon overlay — always show when we have a profile,
+                // even if heading is uncertain. User can drag to align.
+                if (meta.hasGps && _profilePointCount > 0)
                   _buildHorizonOverlay(meta),
 
                 // Compass dial (when heading is unknown or user wants to set it)
