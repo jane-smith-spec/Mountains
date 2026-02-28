@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'live_view_screen.dart';
 import 'photo_debug_screen.dart';
+import 'photo_view_screen.dart';
+import 'region_download_screen.dart';
+import 'settings_screen.dart';
 
 /// The initial home screen of PeakLine.
 ///
@@ -79,16 +83,67 @@ class HomeScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const PhotoDebugScreen(),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.photo),
-                label: const Text('Open Photo Debug'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const LiveViewScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Live View'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const PhotoViewScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Photo View'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const RegionDownloadScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.download),
+                    label: const Text('Region Download'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const SettingsScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.settings),
+                    label: const Text('Settings'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const PhotoDebugScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.science),
+                    label: const Text('Photo Debug'),
+                  ),
+                ],
               ),
             ],
           ),
